@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Poulpe Royale — jeu VR multijoueur</title>
+  <meta name="description" content="Sois un poulpe dans un aquarium : nage aux mains, mange des poissons pour grandir, chasse les avis de recherche et achète des armes. Multijoueur P2P en WebXR." />
+  <style>:root{--bg:#052a33;--panel:#0b3a46;--accent:#ff9d5c;--green:#7dff9b;--text:#eafff5}*{box-sizing:border-box;margin:0;padding:0}html,body{background:var(--bg);width:100%;height:100%;color:var(--text);font-family:system-ui,-apple-system,Segoe UI,sans-serif;overflow:hidden}#app,#app canvas{width:100%;height:100%;display:block}#title{z-index:50;text-align:center;background:radial-gradient(at 50% 30%,#0c5468 0%,#052a33 55%,#03161d 100%);flex-direction:column;justify-content:center;align-items:center;gap:18px;padding:24px;display:flex;position:fixed;inset:0}.logo{letter-spacing:2px;color:var(--accent);text-shadow:0 6px #93400f,0 10px 24px #00000080;font-size:clamp(40px,8vw,86px);font-weight:900}.tagline{opacity:.85;max-width:640px;font-size:clamp(14px,2.2vw,20px)}.form{background:var(--panel);border-radius:16px;flex-direction:column;gap:12px;min-width:min(420px,90vw);margin-top:12px;padding:22px 26px;display:flex;box-shadow:0 12px 40px #00000073}.form label{text-transform:uppercase;letter-spacing:1px;opacity:.7;text-align:left;font-size:13px}.form input{color:var(--text);background:#062028;border:2px solid #1d5a6b;border-radius:10px;outline:none;padding:12px 14px;font-size:17px}.form input:focus{border-color:var(--accent)}.btn{cursor:pointer;letter-spacing:1px;color:#062028;background:var(--accent);border:none;border-radius:12px;padding:15px 20px;font-size:18px;font-weight:800;transition:transform 80ms,filter .15s}.btn:hover{filter:brightness(1.12);transform:translateY(-1px)}.btn:disabled{opacity:.45;cursor:not-allowed;transform:none}.btn.secondary{color:var(--text);background:#1d5a6b}#xr-error{color:#ff9a8a;min-height:18px;font-size:14px}.controls-hint{opacity:.65;max-width:560px;font-size:13px;line-height:1.7}.controls-hint b{color:var(--accent)}#btn-mute{z-index:60;background:var(--panel);color:var(--text);cursor:pointer;border:1px solid #1d5a6b;border-radius:10px;padding:8px 14px;font-size:13px;font-weight:700;position:fixed;top:14px;right:14px}#loading{z-index:55;background:#03161d;flex-direction:column;justify-content:center;align-items:center;gap:16px;font-size:20px;display:none;position:fixed;inset:0}.spinner{border:5px solid #1d5a6b;border-top-color:var(--accent);border-radius:50%;width:44px;height:44px;animation:1s linear infinite spin}@keyframes spin{to{transform:rotate(360deg)}}#hud{z-index:40;background:#061218d1;border:1px solid #8cdcf04d;border-radius:12px;min-width:340px;padding:12px 16px;font-size:14px;display:none;position:fixed;bottom:14px;left:14px}#hud .row{align-items:center;gap:10px;margin:3px 0;display:flex}#hud .k{color:#7f97a3;text-transform:uppercase;letter-spacing:.5px;min-width:64px;font-size:12px}#hud .v{font-weight:700}#hud .money{color:var(--green)}#hud .small{color:#7f97a3;font-size:11.5px}#hud .bar{background:#ffffff26;border-radius:6px;flex:1;height:12px;overflow:hidden}#hud .fill{border-radius:6px;height:100%;transition:width .2s}#crosshair{z-index:40;pointer-events:none;width:20px;height:20px;margin:-10px 0 0 -10px;display:none;position:fixed;top:50%;left:50%}#crosshair:before,#crosshair:after{content:"";background:#eafff5e6;position:absolute}#crosshair:before{width:2px;height:20px;top:0;left:9px}#crosshair:after{width:20px;height:2px;top:9px;left:0}#hitflash{z-index:45;pointer-events:none;opacity:0;background:radial-gradient(#ff3c2800 40%,#ff3c288c 100%);transition:opacity .12s;position:fixed;inset:0}#toasts{z-index:60;pointer-events:none;flex-direction:column;align-items:center;gap:8px;display:flex;position:fixed;top:16px;left:50%;transform:translate(-50%)}.toast{color:var(--text);background:#06141ae6;border:1px solid #7dff9b59;border-radius:10px;max-width:80vw;padding:10px 18px;font-size:14px;font-weight:600;animation:.18s pop}@keyframes pop{0%{opacity:0;transform:scale(.85)}}</style>
+  <script type="module" crossorigin src="./assets/index-Ba7aXTfh.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <button id="btn-mute">SON : ON</button>
+
+  <div id="crosshair"></div>
+  <div id="hitflash"></div>
+  <div id="toasts"></div>
+  <div id="hud"></div>
+
+  <div id="loading"><div class="spinner"></div><div>Plongée en cours...</div></div>
+
+  <div id="title">
+    <div class="logo">POULPE ROYALE</div>
+    <div class="tagline">
+      Sois un poulpe dans un aquarium géant. Nage avec tes mains, gobes des poissons pour grandir,
+      traque les avis de recherche et achète des armes avec les primes. Après 3 coups reçus :
+      nuage d'encre automatique.
+    </div>
+    <div class="form">
+      <label for="name">Ton pseudo de poulpe</label>
+      <input id="name" maxlength="14" autocomplete="off" placeholder="Ex : Kraken_Jr" />
+      <label for="room">Bassin (salle mondiale)</label>
+      <input id="room" autocomplete="off" value="ocean-global" />
+      <button id="btn-vr" class="btn">PLONGER EN VR</button>
+      <button id="btn-desktop" class="btn secondary">JOUER SANS CASQUE (MODE BUREAU)</button>
+      <div id="xr-error"></div>
+    </div>
+    <div class="controls-hint">
+      <b>VR :</b> nage avec les mains (grands mouvements de haut en bas = propulsion vers le haut),
+      gâchette = tirer / attraper un poisson, gâchette latérale = saisir / manger,
+      <b>A/X</b> saut propulsé · <b>B/Y</b> dash · <b>stick droit cliqué</b> camouflage ·
+      viser les panneaux du commissariat pour les avis de recherche et l'armurerie.<br />
+      <b>Bureau :</b> WASD nager · Z monter · C descendre · clic tirer · F saisir/manger ·
+      1-4 armes · E dash · X camouflage.
+    </div>
+  </div>
+
+</body>
+</html>
