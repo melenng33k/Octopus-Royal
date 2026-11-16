@@ -82,6 +82,11 @@ export class RemotePlayer {
     this._flashT = 0
   }
 
+  // opacité (camouflage) sur tentacules + contours
+  _setTentOpacity(o) {
+    for (const t of [this.tentL, this.tentR, ...this.deco]) t.setOpacity(o)
+  }
+
   _refreshName() {
     this.scene.remove(this.nameSprite)
     const lvl = Math.floor(this.fish / CFG.growth.levelPerFish) + 1
@@ -161,10 +166,7 @@ export class RemotePlayer {
     const targetOpacity = this.camo ? CFG.abilities.camoOpacity : 1
     this._octoOpacity = damp(this._octoOpacity === undefined ? 1 : this._octoOpacity, targetOpacity, 8, dt)
     this.octo.setOpacity(this._octoOpacity)
-    for (const t of [this.tentL, this.tentR, ...this.deco]) {
-      t.mesh.material.transparent = targetOpacity < 1
-      t.mesh.material.opacity = damp(t.mesh.material.opacity, targetOpacity, 8, dt)
-    }
+    this._setTentOpacity(this._octoOpacity)
 
     // arme
     if (this.weaponIdx !== this._lastWeaponIdx) {

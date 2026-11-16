@@ -12,21 +12,32 @@ export const CFG = {
   },
 
   // ---------- Physique / nage ----------
+  // NOUVELLE NAGE DIRECTIONNELLE (casque) : le sens du balayage des mains
+  // décide de la direction :  haut->bas = descendre,  avant->arrière = avancer,
+  //  gauche->droite = aller à gauche (et inversement dans chaque axe).
   phys: {
-    gravity: 2.1,        // gravité réduite (on est dans l'eau)
-    drag: 1.35,          // traînée de l'eau (par seconde, exponentiel)
-    swimGain: 0.42,      // poussée de réaction : bouger les mains = avancer
-    pushGain: 0.85,      // poussée "Gorilla Tag" : se pousser sur une surface
-    jetThreshold: 2.4,   // vitesse de main vers le bas (m/s) déclenchant la propulsion
-    jetGain: 1.5,        // bonus de propulsion vers le HAUT (grands mouvements haut/bas)
+    gravity: 4.0,        // gravité marquée : on SENT le poids (chute plombée)
+    fallCapDesktop: 0.8, // vitesse de chute max BUREAU (m/s)
+    fallCapVr: 2.2,      // vitesse de chute max CASQUE (m/s) — plongeons rapides
+    drag: 1.15,          // traînée de l'eau (par seconde, exponentiel) : glisse ++
+    swimGain: 0.46,      // poussée de réaction X/Z : ramer avant->arrière = avancer
+    swimGainY: 0.62,     // poussée verticale DIRECTE : haut->bas = descendre
+    speedBoost: 0.14,    // gain bonus proportionnel à la vitesse de main (coups francs)
+    pushGain: 0.95,      // poussée "Gorilla Tag" : se pousser sur une surface
     maxSpeed: 6.5,       // vitesse max BUREAU (m/s) avant bonus de croissance
     // Bonus de vitesse RÉSERVÉS AU CASQUE (WebXR) — le bureau garde maxSpeed :
-    vrSwimMult: 2.7,     // x2.7 sur la poussée de nage aux mains
-    vrPushMult: 2.2,     // x2.2 sur la poussée Gorilla Tag sur surfaces
-    vrJetMult: 2.1,      // x2.1 sur le jet vertical
-    vrMaxSpeed: 16,      // vitesse max en VR (m/s)
+    vrSwimMult: 3.4,     // x3.4 sur la poussée de nage aux mains
+    vrSwimYMult: 2.6,    // x2.6 sur la poussée verticale directe
+    vrPushMult: 2.4,     // x2.4 sur la poussée Gorilla Tag sur surfaces
+    vrMaxSpeed: 21,      // vitesse max en VR (m/s) : ça PÈQUE vraiment
     bodyRadius: 0.4,     // rayon du corps (x échelle de croissance)
-    handRadius: 0.07
+    handRadius: 0.07,
+    // --- juice des mouvements (satisfaction) ---
+    strokeThreshold: 2.6,  // vitesse de main (m/s) qui déclenche un "coup de rame"
+    strokeCooldown: 0.28,  // délai min entre deux coups de rame par main (s)
+    strokeImpulse: 0.85,   // impulsion bonus sur chaque coup de rame (m/s)
+    strokeHaptic: 0.65,    // force de la vibration casque sur un coup de rame
+    hapticEnabled: true
   },
 
   // ---------- Tentacules ----------
@@ -108,7 +119,7 @@ export const CFG = {
 
   // ---------- Poissons ----------
   fish: {
-    count: 34,
+    count: 38,           // dont 4 "grands hôtes" (requin, raie, dauphins) non attrapables
     cruiseSpeed: 0.85,
     fleeSpeed: 2.25,      // largement rattrapable maintenant
     fleeRadius: 1.45,     // t'aperçoit plus tard
@@ -142,6 +153,22 @@ export const CFG = {
     // TURN optionnel pour les NAT stricts (laisser vide sinon).
     // Exemple : [{ urls: 'turn:ton-serveur.com:3478', username: 'x', credential: 'y' }]
     turn: []
+  },
+
+  // ---------- Rendu / effets ----------
+  fx: {
+    outlines: true,        // contour noir cartoon (inverted hull)
+    outlineWidth: {        // épaisseur par type (espace objet)
+      tentacle: 0.014, fish: 0.014, gun: 0.005,
+      prop: 0.01, rock: 0.012, octo: 0.045
+    },
+    caustics: true,        // caustiques lumineuses animées sur le sable
+    waterCeiling: true,    // surface d'eau ondulante au-dessus du bassin
+    plankton: true,        // particules en suspension
+    godRays: true,         // rayons de lumière
+    shadows: true,         // ombres douces (soleil)
+    toneMapping: true,     // ACES filmic + exposition cinéma
+    ambientSound: true     // rumeur aquatique continue
   },
 
   // ---------- Divers ----------

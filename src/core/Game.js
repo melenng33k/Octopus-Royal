@@ -25,6 +25,16 @@ export class Game {
     this.renderer.setSize(innerWidth, innerHeight)
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5))
     this.renderer.xr.enabled = mode === 'vr'
+    // rendu cinéma : tone mapping ACES + ombres douces
+    if (CFG.fx.toneMapping) {
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+      this.renderer.toneMappingExposure = 1.12
+    }
+    if (CFG.fx.shadows) {
+      this.renderer.shadowMap.enabled = true
+      // PCFSoftShadowMap a été retiré de three r187 : PCF + radius
+      this.renderer.shadowMap.type = THREE.PCFShadowMap
+    }
     document.getElementById('app').appendChild(this.renderer.domElement)
 
     this.scene = new THREE.Scene()
@@ -89,7 +99,7 @@ export class Game {
     this._last = t
     const time = t / 1000
 
-    this.world.update(dt, time)
+    this.world.update(dt, time, this.player.bodyCenter.clone())
     this.player.update(dt, time)
 
     // poissons : l'hôte simule, les invités interpolent

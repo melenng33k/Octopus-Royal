@@ -80,6 +80,55 @@ class Sfx {
   reload() { this._tone(500, 0.05, { type: 'square', vol: 0.12 }); this._tone(400, 0.05, { type: 'square', vol: 0.12, delay: 0.15 }) }
   grab() { this._tone(320, 0.1, { type: 'triangle', vol: 0.2, slideTo: 480 }) }
   fanfare() { [392, 523, 659, 784, 1047].forEach((f, i) => this._tone(f, 0.22, { vol: 0.2, delay: i * 0.11 })) }
+
+  // --- Rumeur aquatique continue (présence sous l'eau) ---
+  ambient() {
+    if (!this.ctx || this._ambient) return
+    const src = this.ctx.createBufferSource()
+    src.buffer = this.noiseBuf; src.loop = true
+    const f = this.ctx.createBiquadFilter()
+    f.type = 'lowpass'; f.frequency.value = 220; f.Q.value = 0.4
+    const g = this.ctx.createGain()
+    g.gain.value = 0.045
+    // respiration lente de la mer
+    const lfo = this.ctx.createOscillator()
+    lfo.frequency.value = 0.08
+    const lfoG = this.ctx.createGain(); lfoG.gain.value = 0.02
+    lfo.connect(lfoG); lfoG.connect(g.gain)
+    src.connect(f); f.connect(g); g.connect(this.master)
+    src.start(); lfo.start()
+    this._ambient = { src, f, g, lfo }
+  }
+
+  // --- Souffle continu des mains dans l'eau (gain = vitesse des mains) ---
+  handRush(speed) {
+    if (!this.ctx) return
+    if (!this._rush) {
+      const src = this.ctx.createBufferSource()
+      src.buffer = this.noiseBuf; src.loop = true
+      const f = this.ctx.createBiquadFilter()
+      f.type = 'bandpass'; f.frequency.value = 700; f.Q.value = 0.8
+      const g = this.ctx.createGain(); g.gain.value = 0
+      src.connect(f); f.connect(g); g.connect(this.master)
+      src.start()
+      this._rush = { f, g }
+    }
+    const r = this._rush
+    const t = this.ctx.currentTime
+    const v = Math.min(speed, 16)
+    r.g.gain.setTargetAtTime(this.muted ? 0 : Math.min(0.4, v * v * 0.0026), t, 0.06)
+    r.f.frequency.setTargetAtTime(500 + v * 45, t, 0.1)
+  }
+
+  // --- Coup de rame : souffle bref + bulles ---
+  stroke(intensity = 1) {
+    this._noise(0.22, 0.14 * intensity, 900 + intensity * 500, 'bandpass', 300)
+    this._noise(0.12, 0.1 * intensity, 2500, 'highpass')
+  }
+
+  // --- Plongeon / montée (jet vertical direct) ---
+  jetDown() { this._noise(0.3, 0.22, 800, 'bandpass', 220); this._tone(140, 0.2, { type: 'sine', vol: 0.12, slideTo: 60 }) }
+  jetUp() { this._noise(0.3, 0.22, 500, 'bandpass', 1200); this._tone(80, 0.2, { type: 'sine', vol: 0.12, slideTo: 180 }) }
 }
 
 export const sfx = new Sfx()

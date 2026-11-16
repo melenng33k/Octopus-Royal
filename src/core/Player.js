@@ -1,7 +1,10 @@
 // ============================================================
 // Player — LE poulpe local
-// - Nage aux mains façon Gorilla Tag (poussée + jet d'eau)
-// - Grand mouvement de haut en bas = propulsion vers le HAUT
+// - Nage directionnelle aux mains : le SENS du balayage décide de
+//   la direction (haut->bas = descendre, avant->arrière = avancer,
+//   gauche->droite = aller à gauche, et inversement) — style "rame"
+// - Gravité marquée, vitesse de casque boostée, coups de rame
+//   satisfaisants : impulsions, vibrations casque, souffles, bulles
 // - Attraper les poissons à la gâchette, les manger -> grandir
 // - Armes, coups de tentacule, saut, dash, camouflage
 // - 3 coups reçus -> nuage d'encre automatique
@@ -98,6 +101,8 @@ export class Player {
     this._btnPrev = { a: false, b: false, stick: false }
     this._xrPosPrev = { left: new THREE.Vector3(), right: new THREE.Vector3(), has: false }
     this.handVelRel = { left: new THREE.Vector3(), right: new THREE.Vector3() }
+    // coups de rame (juice) : cooldown par main
+    this._strokeCd = { left: 0, right: 0 }
 
     //------ entrées bureau ------
     // (desktopYaw / desktopPitch déjà initialisés dans _buildRig)
@@ -229,6 +234,17 @@ export class Player {
   }
 
   // ================= entrées =================
+  // vibration du contrôleur (satisfaction des mouvements)
+  pulse(hand, intensity = 0.5, ms = 40) {
+    if (!CFG.phys.hapticEnabled) return
+    const session = this.renderer.xr.getSession()
+    if (!session) return
+    for (const src of session.inputSources) {
+      if (src.handedness === hand && src.gamepad && src.gamepad.hapticActuators && src.gamepad.hapticActuators[0]) {
+        try { src.gamepad.hapticActuators[0].pulse(intensity, ms) } catch { /* non supporté */ }
+      }
+    }
+  }
   _trigger(hand, down) {
     if (!hand) return
     const was = this.triggerHeld[hand]
@@ -466,6 +482,8 @@ export class Player {
     this.hitFlash = 0.22
     this.regenT = CFG.combat.regenDelay
     sfx.hurt()
+    this.pulse('left', 0.75, 60)
+    this.pulse('right', 0.75, 60)
     this.game.hud.dirty = true
     // compteur encre : 3 coups dans la fenêtre -> nuage !
     const now = performance.now() / 1000
@@ -543,6 +561,8 @@ export class Player {
     this.invuln = Math.max(0, this.invuln - dt)
     this.hitFlash = Math.max(0, this.hitFlash - dt)
     this.punchAnimT = Math.max(0, this.punchAnimT - dt)
+    this._strokeCd.left = Math.max(0, this._strokeCd.left - dt)
+    this._strokeCd.right = Math.max(0, this._strokeCd.right - dt)
     if (this.reloadT > 0) {
       this.reloadT -= dt
       if (this.reloadT <= 0) {
@@ -617,14 +637,14 @@ export class Player {
       this._btnPrev = { a, b, stick }
     }
 
-    // vitesses des mains (relatives au corps)
+    // vitesses des mains (relatives au corps) — réponse nerveuse
     for (const hand of ['left', 'right']) {
       const now = this._handPos(hand, new THREE.Vector3())
       const prev = this._xrPosPrev[hand]
       if (this._xrPosPrev.has) {
         const rel = now.clone().sub(prev).divideScalar(Math.max(dt, 1e-4))
         rel.sub(this.vel) // vitesse RELATIVE au corps
-        this.handVelRel[hand].lerp(rel, 0.6)
+        this.handVelRel[hand].lerp(rel, 0.75)
       }
       this._xrPosPrev[hand].copy(now)
       this._xrPosPrev.has = true
@@ -666,23 +686,23 @@ export class Player {
     const inVR = this.renderer.xr.isPresenting
     // bonus de vitesse UNIQUEMENT en casque (le bureau garde ses réglages)
     const swimG = p.swimGain * (inVR ? p.vrSwimMult : 1)
+    const swimYG = p.swimGainY * (inVR ? p.vrSwimYMult : 1)
     const pushG = p.pushGain * (inVR ? p.vrPushMult : 1)
-    const jetG = p.jetGain * (inVR ? p.vrJetMult : 1)
-    // poussées des mains (réaction + jet vers le haut + poussée sur surfaces)
+    let handSpeedSum = 0
     for (const hand of ['left', 'right']) {
       const hv = this.handVelRel[hand]
       const speed = hv.length()
-      if (speed > 0.4) {
-        // réaction aquatique : la main repousse l'eau
-        this.vel.addScaledVector(hv, -swimG * dt)
-        // jet : grand mouvement vers le BAS -> propulsion vers le HAUT
-        if (hv.y < -p.jetThreshold) {
-          this.vel.y += (-hv.y) * jetG * dt
-          if (Math.random() < dt * 8) {
-            this.game.fx.bubbles(this._handPos(hand, TMP.v3).clone(), 2)
-            sfx.jet()
-          }
-        }
+      handSpeedSum += speed
+      if (speed > 0.35) {
+        // NAGE DIRECTIONNELLE : le sens du balayage des mains décide du
+        // sens de déplacement.
+        //   X/Z : réaction "rame" (inverse) -> avant->arrière = avancer,
+        //         gauche->droite = aller à gauche, droite->gauche = aller à droite
+        //   Y   : DIRECT -> balayer de haut en bas = plonger, de bas en haut = remonter
+        const boost = 1 + speed * p.speedBoost
+        this.vel.x += -hv.x * swimG * boost * dt
+        this.vel.z += -hv.z * swimG * boost * dt
+        this.vel.y += hv.y * swimYG * boost * dt
         // poussée Gorilla Tag : main en contact avec une surface
         const test = this._handPos(hand, TMP.v4).clone()
         const res = this.game.world.collideSphere(test, p.handRadius + 0.03)
@@ -690,10 +710,28 @@ export class Player {
           this.vel.addScaledVector(hv, -pushG * dt)
         }
       }
+      // coup de rame franc : impulsion + vibration + souffle + bulles
+      if (inVR && speed > p.strokeThreshold && this._strokeCd[hand] <= 0) {
+        this._strokeCd[hand] = p.strokeCooldown
+        const dir = new THREE.Vector3(-hv.x, hv.y, -hv.z)
+        const mag = Math.min(speed, 9)
+        dir.normalize().multiplyScalar(p.strokeImpulse * Math.min(1.5, mag / 5))
+        this.vel.add(dir)
+        sfx.stroke(clamp(mag / 7, 0.4, 1.3))
+        if (hv.y < -1.2) sfx.jetDown()
+        else if (hv.y > 1.2) sfx.jetUp()
+        this.game.fx.bubbles(this._handPos(hand, TMP.v3).clone(), 5, 0.18)
+        this.pulse(hand, p.strokeHaptic * clamp(mag / 6, 0.5, 1), 45)
+      }
     }
-    // gravité douce + traînée de l'eau (chute limitée : on est dans l'eau)
+    // souffle continu : mains rapides + vitesse du corps
+    const rush = Math.max(inVR ? handSpeedSum * 0.5 : 0, this.vel.length() * 0.55)
+    sfx.handRush(rush)
+
+    // gravité marquée : on sent le poids, la chute est plombée
     this.vel.y -= p.gravity * dt
-    if (this.vel.y < -0.45) this.vel.y = -0.45
+    const fallCap = -(inVR ? p.fallCapVr : p.fallCapDesktop)
+    if (this.vel.y < fallCap) this.vel.y = fallCap
     this.vel.multiplyScalar(Math.exp(-p.drag * dt))
     // vitesse maximale
     const vmax = (inVR ? p.vrMaxSpeed : p.maxSpeed) * this.speedMult
@@ -713,6 +751,14 @@ export class Player {
       if (Math.abs(res.nx) > 0.5 && Math.sign(this.vel.x) === -Math.sign(res.nx)) this.vel.x *= 0.2
       if (Math.abs(res.nz) > 0.5 && Math.sign(this.vel.z) === -Math.sign(res.nz)) this.vel.z *= 0.2
     }
+    // kick de FOV (bureau uniquement — jamais en casque, confort VR)
+    if (!inVR) {
+      const targetFov = 72 + clamp(this.vel.length() * 0.95, 0, 11)
+      if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+        this.camera.fov = damp(this.camera.fov, targetFov, 6, dt)
+        this.camera.updateProjectionMatrix()
+      }
+    }
   }
 
   _updateBodyVisuals(dt, time, isDead) {
@@ -724,6 +770,15 @@ export class Player {
     this.bodyGroup.position.copy(head).addScaledVector(look, -0.5 * this.scaleCur)
     this.bodyGroup.position.y -= 0.12 * this.scaleCur
     this.bodyGroup.rotation.y = Math.atan2(look.x, look.z) + Math.PI
+    // inclinaison dynamique (lean) : le corps s"incline dans son mouvement,
+    // la caméra ne bouge JAMAIS (confort VR)
+    const right = new THREE.Vector3().crossVectors(look, new THREE.Vector3(0, -1, 0)).normalize()
+    const vRight = clamp(this.vel.dot(right) * 0.055, -0.32, 0.32)
+    const vFwd = clamp(this.vel.dot(look) * 0.028, -0.2, 0.2)
+    this._leanRoll = damp(this._leanRoll || 0, vRight, 6, dt)
+    this._leanPitch = damp(this._leanPitch || 0, vFwd, 6, dt)
+    this.bodyGroup.rotation.z = this._leanRoll
+    this.bodyGroup.rotation.x = this._leanPitch
     const s = this.scaleCur
     this.bodyGroup.scale.setScalar(s)
     if (isDead) this.bodyGroup.visible = false
@@ -818,10 +873,7 @@ export class Player {
   _updateCamoVisuals() {
     // transparence locale quand camouflé (les autres nous voient quasi invisible)
     const o = this.camoActive ? 0.35 : 1
-    for (const t of [this.tentL, this.tentR, ...this.deco]) {
-      t.mesh.material.transparent = o < 1
-      t.mesh.material.opacity = o
-    }
+    for (const t of [this.tentL, this.tentR, ...this.deco]) t.setOpacity(o)
     if (this.octo.ready) this.octo.setOpacity(o)
   }
 
@@ -838,6 +890,8 @@ export class Player {
         const dmg = Math.round(this.dmgStat * factor)
         this.game.applyPunch(this, hit, dmg, tip)
         sfx.punch()
+        this.punchAnimT = 0.12
+        this.pulse(t === this.tentL ? 'left' : 'right', 0.8, 50)
         break
       }
     }

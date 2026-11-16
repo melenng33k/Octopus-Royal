@@ -30,6 +30,10 @@ Après 3 coups reçus, tu relâches un nuage d'encre qui aveugle tes adversaires
 | Double saut, dash, camouflage | Débloqués à 10 / 25 / 50 poissons mangés |
 | **Montre-boussole (VR)** | Accrochée à ta tentacule gauche : son aiguille pointe toujours vers le commissariat ; **touche-la pour ouvrir ton menu** (armurerie, son, téléport commissariat) |
 | **Grand bassin** | Aquarium 72 × 46 × 22 m, décor densifié, brume adaptée |
+| **Rendu cinéma** | Tone mapping ACES, ombres douces, caustiques animées sur le sable, surface d'eau ondulante au-dessus du bassin (shader), rayons de lumière volumétriques, plancton en suspension, algues balancées par le GPU |
+| **Contour noir cartoon** | Inverted hull sur les poulpes, poissons, tentacules, armes et props (compatible squelettes animés) |
+| **Vrais modèles 3D (CC0)** | 12 espèces de poissons Quaternius animés (nage normale/rapide) + requin, raie manta et dauphins d'ambiance ; épave de navire, coffre au trésor qui s'ouvre quand tu t'approches, barils, caisses, rochers et bouées Kenney — voir `src/assets/models/CREDITS.md` |
+| **Nage satisfaisante** | Coups de rame francs : impulsion bonus, vibration des manettes, souffle d'eau, bulles ; le corps s'incline dans ton mouvement (jamais la caméra) |
 
 ## Jouer (Meta Quest)
 
@@ -45,8 +49,8 @@ Après 3 coups reçus, tu relâches un nuage d'encre qui aveugle tes adversaires
 
 | Action | Entrée |
 | --- | --- |
-| Nager | Bouger les mains dans l'eau (bouger vite = aller vite) |
-| Propulsion vers le haut | Grands mouvements de main de haut en bas |
+| Nager (nage directionnelle) | **Le sens du balayage de tes mains décide où tu vas** : avant → arrière = avancer · gauche → droite = aller à gauche (et inversement) · haut → bas = plonger · bas → haut = remonter |
+| Coup de rame boosté | Balayer vite : impulsion + vibration + souffle d'eau |
 | Se pousser (murs, sol) | Appuyer la main sur une surface et la pousser |
 | Attraper un poisson / tirer | Gâchette index (sans arme : attraper ; avec arme : tirer) |
 | Saisir / manger le poisson tenu | Gâchette latérale (grip) |

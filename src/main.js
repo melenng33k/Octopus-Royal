@@ -32,6 +32,7 @@ async function start(mode) {
   started = true
   sfx.init()
   sfx.resume()
+  if (CFG.fx.ambientSound) sfx.ambient()
 
   const name = sanitizeName($('name').value, randomName())
   const room = ($('room').value || CFG.net.room).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-') || CFG.net.room

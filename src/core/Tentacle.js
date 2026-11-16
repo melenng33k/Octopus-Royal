@@ -2,8 +2,10 @@
 // Tentacle — chaîne Verlet avec collision + tube 3D mis à jour
 // Chaque main contrôle un tentacule ; le corps en porte aussi
 // 4 décoratifs. Réutilisé tel quel pour les joueurs distants.
+// Option outline : tube noir jumeau (contour cartoon inverted hull).
 // ============================================================
 import * as THREE from 'three'
+import { CFG } from '../config.js'
 
 const UP = new THREE.Vector3(0, 1, 0)
 
@@ -24,6 +26,7 @@ export class Tentacle {
       adaptiveMax: 1.35,    // auto-longueur : extension max (x longueur au repos)
       colorRoot: 0xc44a17,
       colorTip: 0xf59a5b,
+      outline: CFG.fx && CFG.fx.outlines,   // contour noir jumeau
       ...opts
     }
     this.n = o.n
@@ -73,6 +76,20 @@ export class Tentacle {
     this.mesh = new THREE.Mesh(geo, mat)
     this.mesh.frustumCulled = false
     this.mesh.matrixAutoUpdate = false
+
+    // tube outline (contour noir) : mêmes indices, rayon + largeur
+    this.outlineW = (CFG.fx && CFG.fx.outlineWidth ? CFG.fx.outlineWidth.tentacle : 0.016)
+    if (o.outline) {
+      const geo2 = new THREE.BufferGeometry()
+      geo2.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3))
+      geo2.setIndex(idx)
+      const mat2 = new THREE.MeshBasicMaterial({ color: 0x05070a, side: THREE.BackSide, fog: false, toneMapped: false })
+      this.outlineMesh = new THREE.Mesh(geo2, mat2)
+      this.outlineMesh.frustumCulled = false
+      this.outlineMesh.matrixAutoUpdate = false
+      this.outlineMesh.renderOrder = -1
+      this.mesh.add(this.outlineMesh)
+    }
 
     // temporaires
     this._v1 = new THREE.Vector3()
@@ -131,6 +148,11 @@ export class Tentacle {
       }
     }
     geo.setIndex(idx)
+    if (this.outlineMesh) {
+      const geo2 = this.outlineMesh.geometry
+      geo2.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3))
+      geo2.setIndex(idx)
+    }
     this._colorsInit = false
   }
 
@@ -294,9 +316,11 @@ export class Tentacle {
     const geo = this.mesh.geometry
     const pos = geo.attributes.position
     const col = geo.attributes.color
+    const oPos = this.outlineMesh ? this.outlineMesh.geometry.attributes.position : null
     const radial = this.radial
     const pts = this.pts, n = this.n
     const R = this.radius
+    const OW = this.outlineW
 
     for (let i = 0; i < n; i++) {
       const p = pts[i]
@@ -323,6 +347,7 @@ export class Tentacle {
         const nz = this._binormal.z * Math.cos(ang) + this._normal.z * Math.sin(ang)
         const k = i * (radial + 1) + j
         pos.setXYZ(k, p.x + nx * r, p.y + ny * r, p.z + nz * r)
+        if (oPos) oPos.setXYZ(k, p.x + nx * (r + OW), p.y + ny * (r + OW), p.z + nz * (r + OW))
         if (!this._colorsInit) {
           // dégradé + "ventouses" (anneaux alternés plus clairs)
           const c = this.colorRoot.clone().lerp(this.colorTip, t)
@@ -333,6 +358,7 @@ export class Tentacle {
     }
     this._colorsInit = true
     pos.needsUpdate = true
+    if (oPos) oPos.needsUpdate = true
     if (!this._normalsDoneOnce) { /* recalcul chaque frame, léger */ }
     geo.computeVertexNormals()
     geo.attributes.normal.needsUpdate = true
@@ -343,8 +369,24 @@ export class Tentacle {
     return out.set(p.x, p.y, p.z)
   }
 
+  // opacité (camouflage) : tube + contour suivent
+  setOpacity(o) {
+    const transparent = o < 1
+    this.mesh.material.transparent = transparent
+    this.mesh.material.opacity = o
+    if (this.outlineMesh) {
+      this.outlineMesh.material.transparent = true
+      this.outlineMesh.material.opacity = o
+      this.outlineMesh.visible = o > 0.5
+    }
+  }
+
   dispose() {
     this.mesh.geometry.dispose()
     this.mesh.material.dispose()
+    if (this.outlineMesh) {
+      this.outlineMesh.geometry.dispose()
+      this.outlineMesh.material.dispose()
+    }
   }
 }

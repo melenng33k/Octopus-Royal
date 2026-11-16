@@ -1,9 +1,12 @@
 // ============================================================
 // Weapons — modèles d'armes 100% procéduraux (cartoon low-poly)
 // Glock < Uzi < Sniper < Mitrailleuse. Tir géré dans Player.js
+// Contour noir cartoon sur chaque arme.
 // ============================================================
 import * as THREE from 'three'
 import { WEAPON_BY_ID } from '../config.js'
+import { CFG } from '../config.js'
+import { addOutline } from '../core/Outline.js'
 
 const metal = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45, metalness: 0.55 })
 const grip = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, metalness: 0.05 })
@@ -84,6 +87,7 @@ export function buildGunMesh(id) {
     return proto.clone(true)
   }
   const g = BUILDERS[id]()
+  if (CFG.fx.outlines) addOutline(g, { width: CFG.fx.outlineWidth.gun })
   cache.set(id, g)
   return g.clone(true)
 }
