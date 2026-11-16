@@ -34,6 +34,8 @@ export class RemotePlayer {
     this.fishL = -1
     this.fishR = -1
     this._hasState = false
+    this.vrPeer = false
+    this._peerVr = null
 
     this._build()
     this._refreshName()
@@ -47,10 +49,11 @@ export class RemotePlayer {
     // corps : modèle 3D du poulpe (octo.glb), teinté vert
     this.octo = createOcto(0x3f8f6a)
 
-    // tentacules principaux + décoratifs (suspension libre)
+    // tentacules principaux : auto-longueur (sécurité anti-explosion),
+    // reconfigurés selon le mode du joueur distant dès son premier état
     const T = CFG.tent
-    this.tentL = new Tentacle({ n: T.n, segLen: T.segLen, radius: T.radius, stiffness: 0.075, colorRoot: 0x2e7a54, colorTip: 0x54b183 })
-    this.tentR = new Tentacle({ n: T.n, segLen: T.segLen, radius: T.radius, stiffness: 0.075, colorRoot: 0x2e7a54, colorTip: 0x54b183 })
+    this.tentL = new Tentacle({ n: T.vrN, segLen: T.vrSegLen, radius: T.radius, stiffness: 0.075, adaptive: true, colorRoot: 0x2e7a54, colorTip: 0x54b183 })
+    this.tentR = new Tentacle({ n: T.vrN, segLen: T.vrSegLen, radius: T.radius, stiffness: 0.075, adaptive: true, colorRoot: 0x2e7a54, colorTip: 0x54b183 })
     this.deco = []
     for (let i = 0; i < 4; i++) {
       this.deco.push(new Tentacle({ n: T.decoN, segLen: T.decoSegLen, radius: 0.04, stiffness: 0, colorRoot: 0x255f44, colorTip: 0x3f8f6a }))
@@ -99,6 +102,8 @@ export class RemotePlayer {
 
   applyState(f32) {
     if (!f32 || f32.length < 29) return
+    // données corrompues / aberrantes -> on ignore ce paquet
+    if (!isFinite(f32[0] + f32[1] + f32[2] + f32[7] + f32[8] + f32[9] + f32[10] + f32[11] + f32[12])) return
     this.headPos.set(f32[0], f32[1], f32[2])
     this.headQuat.set(f32[3], f32[4], f32[5], f32[6])
     this.lHand.set(f32[7], f32[8], f32[9])
@@ -113,6 +118,7 @@ export class RemotePlayer {
     this.rHandQuat.set(f32[19], f32[20], f32[21], f32[22])
     this.fishL = Math.round(f32[27])
     this.fishR = Math.round(f32[28])
+    this.vrPeer = f32.length > 29 && f32[29] > 0.5
     this._hasState = true
     if (Math.abs(this.hpNorm - this._lastHpDrawn) > 0.02) { this._drawHp(); this._lastHpDrawn = this.hpNorm }
   }
@@ -174,25 +180,40 @@ export class RemotePlayer {
     this.gunHolder.quaternion.copy(this.rHandQuat)
     this.gunHolder.visible = this.alive
 
-    // tentacules : racines aux flancs ; pendent librement si la main est proche
+    // tentacules : racines aux flancs ; adaptés au mode du joueur distant
+    // (pair VR = vraies mains suivies ; pair bureau = longues tentacules)
+    const T = CFG.tent
+    if (this._peerVr !== this.vrPeer) {
+      this._peerVr = this.vrPeer
+      const n = this.vrPeer ? T.vrN : T.n
+      const seg = this.vrPeer ? T.vrSegLen : T.segLen
+      this.tentL.reshape(n, seg, true)
+      this.tentR.reshape(n, seg, true)
+    }
     this.group.updateMatrixWorld()
     const rootL = new THREE.Vector3(-0.17, -0.12, -0.04).applyMatrix4(this.group.matrixWorld)
     const rootR = new THREE.Vector3(0.17, -0.12, -0.04).applyMatrix4(this.group.matrixWorld)
-    const T = CFG.tent
     for (const [tent, root, hand] of [
       [this.tentL, rootL, this.lHand],
       [this.tentR, rootR, this.rHand]
     ]) {
       tent.setRoot(root)
       const dist = hand.distanceTo(root)
-      const wD = clamp((dist - T.hangFree * this.scale) / (T.hangReach * this.scale), 0, 1)
-      if (wD > 0.04) {
-        const len = (T.n - 1) * T.segLen * 0.8
-        const hang = root.clone()
-        hang.y -= len * this.scale
-        hang.lerp(hand, wD * wD)
-        tent.setTip(hang)
-      } else tent.clearTip()
+      if (this.vrPeer) {
+        // pair casque : le bout suit la vraie main ; pend si main collée au corps
+        if (dist < T.restZone * this.scale) tent.clearTip()
+        else tent.setTip(hand)
+      } else {
+        // pair bureau : pend si la main est proche, s'étire vers elle sinon
+        const wD = clamp((dist - T.hangFree * this.scale) / (T.hangReach * this.scale), 0, 1)
+        if (wD > 0.04) {
+          const len = (T.n - 1) * T.segLen * 0.8
+          const hang = root.clone()
+          hang.y -= len * this.scale
+          hang.lerp(hand, wD * wD)
+          tent.setTip(hang)
+        } else tent.clearTip()
+      }
       tent.update(dt, time, this.game.world)
     }
 

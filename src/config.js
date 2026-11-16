@@ -31,11 +31,21 @@ export const CFG = {
 
   // ---------- Tentacules ----------
   tent: {
-    n: 14, segLen: 0.21, radius: 0.058,  // principaux (mains) — 2x plus longs
+    // principaux BUREAU : longues tentacules fluides (comportement validé)
+    n: 14, segLen: 0.21, radius: 0.058,
+    // principaux CASQUE : bras plus courts qui suivent les vraies mains
+    vrN: 11, vrSegLen: 0.145,
+    // PNJ : bras proportionnés au corps (l'auto-longueur les sécurise)
+    npcN: 11, npcSegLen: 0.155,
+    // auto-longueur : la chaîne s'étire/raccourcit selon la distance main-racine
+    adaptiveMin: 0.34,   // raccourcissement max (x longueur au repos)
+    adaptiveMax: 1.35,   // extension max (x longueur au repos)
     decoN: 13, decoSegLen: 0.19,         // décoratifs
-    hangFree: 0.5,   // distance main-racine sous laquelle le tentacule PEND librement
-    hangReach: 1.15, // distance à laquelle il est totalement tendu vers la main
-    hangSpeed: 1.8   // vitesse de main (m/s) qui force la poursuite de la main
+    restZone: 0.3,       // (casque) main à moins de X m du corps -> tentacule pend
+    restSpeed: 0.6,      // (casque) vitesse de main (m/s) considérée "au repos"
+    hangFree: 0.5,   // distance main-racine sous laquelle le tentacule PEND librement (bureau)
+    hangReach: 1.15, // distance à laquelle il est totalement tendu vers la main (bureau)
+    hangSpeed: 1.8   // vitesse de main (m/s) qui force la poursuite de la main (bureau)
   },
 
   // ---------- Croissance (manger des poissons) ----------

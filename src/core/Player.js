@@ -750,21 +750,36 @@ export class Player {
     rootR.applyMatrix4(this.bodyGroup.matrixWorld)
 
     const inVR = this.renderer.xr.isPresenting
+    // au passage bureau <-> casque : reconfigurer les tentacules principaux
+    // (casque = bras courts à auto-longueur ; bureau = longues tentacules fluides)
+    if (this._tentVrMode !== inVR) {
+      this._tentVrMode = inVR
+      const n = inVR ? T.vrN : T.n
+      const seg = inVR ? T.vrSegLen : T.segLen
+      this.tentL.reshape(n, seg, inVR)
+      this.tentR.reshape(n, seg, inVR)
+    }
     for (const [tent, root, hand] of [
       [this.tentL, rootL, 'left'],
       [this.tentR, rootR, 'right']
     ]) {
       tent.setRoot(root)
       const handPos = this._handPos(hand, new THREE.Vector3())
-      // la tentacule PEND librement quand la main est proche du corps ;
-      // elle s'étire vers la main quand celle-ci s'éloigne ou bouge vite
-      const dist = handPos.distanceTo(root)
-      const wD = clamp((dist - T.hangFree * this.scaleCur) / (T.hangReach * this.scaleCur), 0, 1)
-      const wS = clamp(this.handVelRel[hand].length() / T.hangSpeed, 0, 1)
-      let w = Math.max(wD, wS * 0.85)
-      if (!inVR) w = Math.max(w, 0.85) // bureau : mains imaginaires toujours visées
-      if (w > 0.04) {
-        // position de repos : pend sous la racine, avec ondulation
+      if (inVR) {
+        // CASQUE : le bout suit la VRAIE main (manette) — c'est le bras du poulpe.
+        // Il pend librement seulement si la main est collée au corps ET immobile.
+        const dist = handPos.distanceTo(root)
+        const near = dist < T.restZone * this.scaleCur
+        const slow = this.handVelRel[hand].length() < T.restSpeed
+        if (near && slow) tent.clearTip()
+        else tent.setTip(handPos)
+      } else {
+        // BUREAU : la tentacule PEND librement quand la main imaginaire est
+        // proche du corps ; s'étire vers elle sinon (comportement validé)
+        const dist = handPos.distanceTo(root)
+        const wD = clamp((dist - T.hangFree * this.scaleCur) / (T.hangReach * this.scaleCur), 0, 1)
+        const wS = clamp(this.handVelRel[hand].length() / T.hangSpeed, 0, 1)
+        const w = Math.max(wD, wS * 0.85, 0.85) // bureau : mains imaginaires toujours visées
         const len = (T.n - 1) * T.segLen * 0.8
         const hang = root.clone()
         hang.y -= len * this.scaleCur
@@ -772,8 +787,6 @@ export class Player {
         hang.z += Math.cos(time * 1.1 + (hand === 'left' ? 0 : 2.1)) * 0.1
         hang.lerp(handPos, w * w)
         tent.setTip(hang)
-      } else {
-        tent.clearTip()
       }
       tent.update(dt, time, this.game.world)
     }
@@ -832,7 +845,7 @@ export class Player {
 
   // ================= synchro =================
   encodeState() {
-    const a = new Float32Array(29)
+    const a = new Float32Array(30)
     const head = this.headWorld
     a[0] = head.x; a[1] = head.y; a[2] = head.z
     this.camera.getWorldQuaternion(TMP.q1)
@@ -862,6 +875,7 @@ export class Player {
     }
     a[27] = this.heldFish.left ? this.heldFish.left.id : -1
     a[28] = this.heldFish.right ? this.heldFish.right.id : -1
+    a[29] = this.renderer.xr.isPresenting ? 1 : 0 // mode VR (pour les bras distants)
     return a
   }
 

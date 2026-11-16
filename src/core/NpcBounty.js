@@ -56,11 +56,12 @@ export class NpcBounty {
     // corps : modèle 3D du poulpe (octo.glb), teinté violet voyou
     this.octo = createOcto(0x8a3d6e)
 
-    // 4 tentacules courtes (2 avant = ses "poings") + décoratifs en suspension
+    // 2 tentacules d'attaque ("poings") : auto-longueur -> proportionnés au
+    // corps et SANS risque d'explosion quand il fonce sur le joueur
     const T = CFG.tent
     this.tentF = [
-      new Tentacle({ n: T.n, segLen: T.segLen, radius: T.radius, stiffness: 0.07, colorRoot: 0x6e2d55, colorTip: 0xa04a7c }),
-      new Tentacle({ n: T.n, segLen: T.segLen, radius: T.radius, stiffness: 0.07, colorRoot: 0x6e2d55, colorTip: 0xa04a7c })
+      new Tentacle({ n: T.npcN, segLen: T.npcSegLen * this.scale, radius: T.radius, stiffness: 0.07, adaptive: true, colorRoot: 0x6e2d55, colorTip: 0xa04a7c }),
+      new Tentacle({ n: T.npcN, segLen: T.npcSegLen * this.scale, radius: T.radius, stiffness: 0.07, adaptive: true, colorRoot: 0x6e2d55, colorTip: 0xa04a7c })
     ]
     this.deco = []
     for (let i = 0; i < 3; i++) {

@@ -19,6 +19,9 @@ export class Tentacle {
       collisionRadius: 0.05,
       stiffness: 0.05,
       hangGravity: 1.1,     // gravité de suspension (eau) : fait pendre la chaîne
+      adaptive: false,      // auto-longueur : la chaîne s'ajuste à la distance racine->bout
+      adaptiveMin: 0.34,    // auto-longueur : raccourcissement max (x longueur au repos)
+      adaptiveMax: 1.35,    // auto-longueur : extension max (x longueur au repos)
       colorRoot: 0xc44a17,
       colorTip: 0xf59a5b,
       ...opts
@@ -29,6 +32,10 @@ export class Tentacle {
     this.cr = o.collisionRadius
     this.stiffness = o.stiffness
     this.hangGravity = o.hangGravity
+    this.baseSegLen = o.segLen
+    this.adaptive = o.adaptive
+    this.adaptiveMin = o.adaptiveMin
+    this.adaptiveMax = o.adaptiveMax
 
     this.pts = []
     for (let i = 0; i < this.n; i++) {
@@ -38,6 +45,7 @@ export class Tentacle {
     this.tipPrev = new THREE.Vector3()
     this.tipSpeed = 0
     this.initialized = false
+    this._lastRoot = new THREE.Vector3()
 
     // géométrie du tube : rings = n, radial = 7
     const radial = 7
@@ -93,6 +101,55 @@ export class Tentacle {
 
   setTip(v) { this.tipTarget = v }
 
+  // change la configuration de la chaîne (nb de points, longueur, mode)
+  // utilisé au passage bureau <-> casque : reconstruit points + géométrie
+  reshape(n, segLen, adaptive = this.adaptive) {
+    if (n === this.n && Math.abs(segLen - this.baseSegLen) < 1e-6 && adaptive === this.adaptive) return
+    this.n = n
+    this.baseSegLen = segLen
+    this.segLen = segLen
+    this.adaptive = adaptive
+    this.pts = []
+    for (let i = 0; i < n; i++) this.pts.push({ x: 0, y: 0, z: 0, px: 0, py: 0, pz: 0 })
+    this.initialized = false
+    this.tipTarget = null
+    this.tipCur.set(0, 0, 0)
+    this.tipPrev.set(0, 0, 0)
+    const radial = this.radial
+    const vertCount = n * (radial + 1)
+    const geo = this.mesh.geometry
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3))
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3))
+    const idx = []
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = 0; j < radial; j++) {
+        const a = i * (radial + 1) + j
+        const b = a + 1
+        const c = a + radial + 1
+        const d = c + 1
+        idx.push(a, c, b, b, c, d)
+      }
+    }
+    geo.setIndex(idx)
+    this._colorsInit = false
+  }
+
+  // réinitialise la chaîne en suspension sous sa racine (après un NaN)
+  _resetChain() {
+    const r = this.pts[0]
+    const ok = r && isFinite(r.x + r.y + r.z)
+    const rx = ok ? r.x : 0, ry = ok ? r.y : 4, rz = ok ? r.z : 0
+    for (let i = 0; i < this.n; i++) {
+      const q = this.pts[i]
+      q.x = rx; q.y = ry - i * this.segLen; q.z = rz
+      q.px = q.x; q.py = q.y; q.pz = q.z
+    }
+    this.tipCur.set(rx, ry, rz)
+    this.tipPrev.set(rx, ry, rz)
+    this.tipTarget = null
+    this.initialized = true
+  }
+
   // relâche le bout : la chaîne retombe en suspension sous sa racine
   clearTip() {
     if (this.tipTarget) {
@@ -107,11 +164,52 @@ export class Tentacle {
     dt = Math.min(dt, 0.05)
     const pts = this.pts, n = this.n, L = this.segLen
 
+    // garde-fou : point invalide (NaN/Infinity) -> chaîne réinitialisée
+    const chk = pts[1]
+    if (!chk || !isFinite(chk.x + chk.y + chk.z)) this._resetChain()
+
+    // garde-fou : racine TÉLÉPORTÉE (respawn, spawn réseau) -> la chaîne
+    // se réaccroche instantanément sous la nouvelle racine
+    {
+      const r0 = pts[0], lr = this._lastRoot
+      const jdx = r0.x - lr.x, jdy = r0.y - lr.y, jdz = r0.z - lr.z
+      if (jdx * jdx + jdy * jdy + jdz * jdz > 2.25) this._resetChain()
+      this._lastRoot.set(r0.x, r0.y, r0.z)
+    }
+
+    // auto-longueur : la chaîne s'ajuste en douceur à la distance racine->bout
+    // (jamais plus courte que la distance -> jamais d'explosion Verlet)
+    if (this.adaptive) {
+      let target = this.baseSegLen
+      if (this.tipTarget) {
+        const r = pts[0]
+        const ddx = this.tipTarget.x - r.x
+        const ddy = this.tipTarget.y - r.y
+        const ddz = this.tipTarget.z - r.z
+        const dd = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz)
+        const mn = this.baseSegLen * this.adaptiveMin
+        const mx = this.baseSegLen * this.adaptiveMax
+        target = Math.min(mx, Math.max(mn, (dd * 1.12) / (n - 1)))
+      }
+      this.segLen += (target - this.segLen) * (1 - Math.exp(-14 * dt))
+    }
+
     // cible du bout : lissage organique vers la main
     if (this.tipTarget) {
       const k = 1 - Math.exp(-20 * dt)
       this.tipPrev.copy(this.tipCur)
       this.tipCur.lerp(this.tipTarget, k)
+      // anti-explosion : le bout ne dépasse JAMAIS la portée max de la chaîne
+      const r = pts[0]
+      const tdx = this.tipCur.x - r.x
+      const tdy = this.tipCur.y - r.y
+      const tdz = this.tipCur.z - r.z
+      const td = Math.sqrt(tdx * tdx + tdy * tdy + tdz * tdz)
+      const maxReach = (n - 1) * this.segLen * 0.985
+      if (td > maxReach) {
+        const s = maxReach / td
+        this.tipCur.set(r.x + tdx * s, r.y + tdy * s, r.z + tdz * s)
+      }
     }
     this.tipSpeed = this.tipPrev.distanceTo(this.tipCur) / Math.max(dt, 1e-4)
 
@@ -119,11 +217,16 @@ export class Tentacle {
     // (sans cible, le bout aussi est libre : suspension naturelle)
     const lastFree = !this.tipTarget
     const nEnd = lastFree ? n : n - 1
+    // garde-fou : vitesse max par point et par frame (aucune explosion possible,
+    // même avec des données réseau aberrantes ou une téléportation)
+    const vmax = Math.max(0.14, this.segLen * 1.4)
     for (let i = 1; i < nEnd; i++) {
       const p = pts[i]
-      const vx = (p.x - p.px) * 0.93
-      const vy = (p.y - p.py) * 0.93
-      const vz = (p.z - p.pz) * 0.93
+      let vx = (p.x - p.px) * 0.93
+      let vy = (p.y - p.py) * 0.93
+      let vz = (p.z - p.pz) * 0.93
+      const vlen = Math.sqrt(vx * vx + vy * vy + vz * vz)
+      if (vlen > vmax) { const s = vmax / vlen; vx *= s; vy *= s; vz *= s }
       p.px = p.x; p.py = p.y; p.pz = p.z
       // presque apesanteur (eau) + ondulation de repos
       p.x = p.x + vx + Math.sin(time * 2.1 + i * 0.55) * 0.018 * dt * 60 * 0.016
