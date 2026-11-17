@@ -1,12 +1,14 @@
 // ============================================================
 // Player — LE poulpe local
-// - Nage directionnelle aux mains : le SENS du balayage décide de
-//   la direction (haut->bas = descendre, avant->arrière = avancer,
-//   gauche->droite = aller à gauche, et inversement) — style "rame"
-// - Gravité marquée, vitesse de casque boostée, coups de rame
-//   satisfaisants : impulsions, vibrations casque, souffles, bulles
+// - DÉPLACEMENT GORILLA TAG : on se pousse AVEC LES MAINS sur les
+//   surfaces (sol, rochers, épave, parois). Tant qu'une main touche,
+//   vitesse du corps = -(vitesse de la main relative au corps).
+//   Main posée sans bouger = frein net. Décollage = élan conservé.
+//   Rien dans le vide : pas de poussée sans contact, comme le vrai jeu.
+// - DOUBLE SAUT dans l'eau : A ou X — 2 charges, recharge rapide
+// - Gravité marquée, vibrations, bulles : chaque poussée est juteuse
 // - Attraper les poissons à la gâchette, les manger -> grandir
-// - Armes, coups de tentacule, saut, dash, camouflage
+// - Armes, coups de tentacule, dash, camouflage
 // - 3 coups reçus -> nuage d'encre automatique
 // - Mode VR (WebXR) + repli bureau (clavier/souris)
 // ============================================================
@@ -98,11 +100,15 @@ export class Player {
       this.controllers[i] = c
     }
     this.triggerHeld = { left: false, right: false }
-    this._btnPrev = { a: false, b: false, stick: false }
+    this._btnPrev = { a: false, b: false, xl: false, stick: false }
     this._xrPosPrev = { left: new THREE.Vector3(), right: new THREE.Vector3(), has: false }
+    // vitesse des mains RELATIVE au corps (c'est LE cœur de Gorilla Tag)
     this.handVelRel = { left: new THREE.Vector3(), right: new THREE.Vector3() }
-    // coups de rame (juice) : cooldown par main
-    this._strokeCd = { left: 0, right: 0 }
+    // lissage type GT : moyenne des dernières vitesses de main
+    this._handVelHist = { left: [], right: [] }
+    // contact main ↔ surface (par main)
+    this.handTouching = { left: false, right: false }
+    this._wasTouching = false
 
     //------ entrées bureau ------
     // (desktopYaw / desktopPitch déjà initialisés dans _buildRig)
@@ -216,7 +222,7 @@ export class Player {
   get unlocked() {
     const a = CFG.growth.abilities
     return {
-      doubleJump: this.fishCount >= a.doubleJump,
+      doubleJump: true, // le double saut fait partie du déplacement : actif dès le départ
       dash: this.fishCount >= a.dash,
       camo: this.fishCount >= a.camo
     }
@@ -308,10 +314,9 @@ export class Player {
     this.hp = clamp(this.hp + CFG.growth.healPerFish, 1, this.maxHp)
     sfx.chomp()
     this.game.fx.bubbles(this.headWorld, 6)
-    // débloquage de capacité ?
+    // débloquage de capacité ? (le double saut est actif dès le départ)
     const a = CFG.growth.abilities
     for (const [key, need, label] of [
-      ['doubleJump', a.doubleJump, 'DOUBLE SAUT'],
       ['dash', a.dash, 'DASH'],
       ['camo', a.camo, 'CAMOUFLAGE']
     ]) {
@@ -444,8 +449,10 @@ export class Player {
       this.jumpCharges--
       this.jumpRechargeT = CFG.abilities.jumpRecharge
       this.vel.y += CFG.abilities.jumpImpulse
-      sfx.jet()
-      this.game.fx.bubbles(this.bodyCenter.clone(), 8)
+      sfx.jetUp()
+      this.pulse('left', 0.4, 35)
+      this.pulse('right', 0.4, 35)
+      this.game.fx.bubbles(this.bodyCenter.clone(), 10, 0.22)
     }
   }
 
@@ -561,8 +568,6 @@ export class Player {
     this.invuln = Math.max(0, this.invuln - dt)
     this.hitFlash = Math.max(0, this.hitFlash - dt)
     this.punchAnimT = Math.max(0, this.punchAnimT - dt)
-    this._strokeCd.left = Math.max(0, this._strokeCd.left - dt)
-    this._strokeCd.right = Math.max(0, this._strokeCd.right - dt)
     if (this.reloadT > 0) {
       this.reloadT -= dt
       if (this.reloadT <= 0) {
@@ -575,7 +580,8 @@ export class Player {
       this.camoT -= dt
       if (this.camoT <= 0) { this.camoActive = false; this.camoCd = CFG.abilities.camoCooldown; this.game.hud.dirty = true }
     }
-    if (this.jumpCharges < (this.unlocked.doubleJump ? 2 : 1)) {
+    // recharge du double saut : toujours 2 charges
+    if (this.jumpCharges < 2) {
       this.jumpRechargeT -= dt
       if (this.jumpRechargeT <= 0) this.jumpCharges++
     }
@@ -612,39 +618,51 @@ export class Player {
   }
 
   _updateVRInput(dt) {
-    // boutons A/B + stick via gamepad (polling)
+    // boutons A/B/X + stick via gamepad (polling)
     const session = this.renderer.xr.getSession()
     if (session) {
-      let a = false, b = false, stick = false
+      let a = false, b = false, xl = false, stick = false
       let stickX = 0
       for (const src of session.inputSources) {
         const gp = src.gamepad
         if (!gp) continue
         if (src.handedness === 'right') {
-          a = gp.buttons[4] && gp.buttons[4].pressed
-          b = gp.buttons[5] && gp.buttons[5].pressed
-          stick = gp.buttons[3] && gp.buttons[3].pressed
+          a = !!(gp.buttons[4] && gp.buttons[4].pressed)
+          b = !!(gp.buttons[5] && gp.buttons[5].pressed)
+          stick = !!(gp.buttons[3] && gp.buttons[3].pressed)
           stickX = gp.axes[2] || 0
+        } else if (src.handedness === 'left') {
+          xl = !!(gp.buttons[4] && gp.buttons[4].pressed) // bouton X
         }
       }
-      if (a && !this._btnPrev.a) this._doJump()
+      // DOUBLE SAUT : A (droite) OU X (gauche) — 2 charges, même en pleine eau
+      if ((a && !this._btnPrev.a) || (xl && !this._btnPrev.xl)) this._doJump()
       if (b && !this._btnPrev.b) this._doDash()
       if (stick && !this._btnPrev.stick) this._toggleCamo()
       if (Math.abs(stickX) > 0.65 && this._stickEdge !== Math.sign(stickX)) {
         this._stickEdge = Math.sign(stickX)
         this.cycleWeapon(this._stickEdge > 0 ? 1 : -1)
       } else if (Math.abs(stickX) < 0.4) this._stickEdge = 0
-      this._btnPrev = { a, b, stick }
+      this._btnPrev = { a, b, xl, stick }
     }
 
-    // vitesses des mains (relatives au corps) — réponse nerveuse
+    // vitesse des mains RELATIVE au corps — LE cœur de Gorilla Tag.
+    // C'est exactement (position_main - position_corps) dérivée : la main
+    // posée sur une surface (qui bouge avec le corps) a une vitesse
+    // relative NULLE -> frein. La main qui pousse -> poussée proportionnelle.
+    // Lissage : moyenne des 4 dernières frames (comme l'historique GT).
     for (const hand of ['left', 'right']) {
       const now = this._handPos(hand, new THREE.Vector3())
       const prev = this._xrPosPrev[hand]
-      if (this._xrPosPrev.has) {
-        const rel = now.clone().sub(prev).divideScalar(Math.max(dt, 1e-4))
-        rel.sub(this.vel) // vitesse RELATIVE au corps
-        this.handVelRel[hand].lerp(rel, 0.75)
+      if (this._xrPosPrev.has && dt > 0) {
+        const rel = now.sub(prev).divideScalar(dt).sub(this.vel) // relative au corps
+        const hist = this._handVelHist[hand]
+        hist.push(rel)
+        if (hist.length > 4) hist.shift()
+        const avg = new THREE.Vector3()
+        for (const v of hist) avg.add(v)
+        avg.divideScalar(hist.length)
+        this.handVelRel[hand].copy(avg)
       }
       this._xrPosPrev[hand].copy(now)
       this._xrPosPrev.has = true
@@ -684,61 +702,89 @@ export class Player {
   _locomotion(dt) {
     const p = CFG.phys
     const inVR = this.renderer.xr.isPresenting
-    // bonus de vitesse UNIQUEMENT en casque (le bureau garde ses réglages)
-    const swimG = p.swimGain * (inVR ? p.vrSwimMult : 1)
-    const swimYG = p.swimGainY * (inVR ? p.vrSwimYMult : 1)
-    const pushG = p.pushGain * (inVR ? p.vrPushMult : 1)
-    let handSpeedSum = 0
-    for (const hand of ['left', 'right']) {
-      const hv = this.handVelRel[hand]
-      const speed = hv.length()
-      handSpeedSum += speed
-      if (speed > 0.35) {
-        // NAGE DIRECTIONNELLE : le sens du balayage des mains décide du
-        // sens de déplacement.
-        //   X/Z : réaction "rame" (inverse) -> avant->arrière = avancer,
-        //         gauche->droite = aller à gauche, droite->gauche = aller à droite
-        //   Y   : DIRECT -> balayer de haut en bas = plonger, de bas en haut = remonter
-        const boost = 1 + speed * p.speedBoost
-        this.vel.x += -hv.x * swimG * boost * dt
-        this.vel.z += -hv.z * swimG * boost * dt
-        this.vel.y += hv.y * swimYG * boost * dt
-        // poussée Gorilla Tag : main en contact avec une surface
-        const test = this._handPos(hand, TMP.v4).clone()
-        const res = this.game.world.collideSphere(test, p.handRadius + 0.03)
-        if (res.hit && speed > 0.9) {
-          this.vel.addScaledVector(hv, -pushG * dt)
+
+    if (inVR) {
+      // ================= DÉPLACEMENT GORILLA TAG =================
+      // 1) contact main ↔ surface pour chaque main (sphère de contact)
+      this.handTouching.left = this._handContact('left')
+      this.handTouching.right = this._handContact('right')
+      const touching = this.handTouching.left || this.handTouching.right
+
+      if (touching) {
+        // 2) FORMULE GORILLA TAG : la vitesse du corps devient la somme des
+        //    vitesses des mains EN CONTACT, inversée (relative au corps).
+        //    - main posée sans bouger -> vitesse nulle -> on s'arrête net (frein)
+        //    - main qui pousse vers le bas -> on monte (on se soulève du sol)
+        //    - main qui pousse vers l'arrière -> on avance (on se pousse)
+        //    - les 2 mains qui poussent -> vitesses cumulées
+        //    Léger lissage (0.75/frame) pour absorber le jitter du tracking,
+        //    tout en restant quasi instantané comme dans le vrai jeu.
+        const push = TMP.v1.set(0, 0, 0)
+        if (this.handTouching.left) push.add(this.handVelRel.left)
+        if (this.handTouching.right) push.add(this.handVelRel.right)
+        push.multiplyScalar(-p.gtGain)
+        this.vel.lerp(push, 0.75)
+      } else {
+        // 3) EN VOL (dans l'eau) : élan conservé + gravité + traînée.
+        //    C'est là que la poussée devient SATISFAISANTE : tu décolles
+        //    avec toute ta vitesse et tu glisses loin.
+        this.vel.y -= p.gravity * dt
+        const fallCap = -p.fallCapVr
+        if (this.vel.y < fallCap) this.vel.y = fallCap
+        this.vel.multiplyScalar(Math.exp(-p.drag * dt))
+        // retour d'asticot au décollage : on quitte une surface avec de l'élan
+        if (this._wasTouching && this.vel.length() > 1.6) {
+          const k = clamp(this.vel.length() / 8, 0.4, 1)
+          this.pulse('left', p.launchHaptic * k, 50)
+          this.pulse('right', p.launchHaptic * k, 50)
+          this.game.fx.bubbles(this.bodyCenter.clone(), 6, 0.16)
         }
       }
-      // coup de rame franc : impulsion + vibration + souffle + bulles
-      if (inVR && speed > p.strokeThreshold && this._strokeCd[hand] <= 0) {
-        this._strokeCd[hand] = p.strokeCooldown
-        const dir = new THREE.Vector3(-hv.x, hv.y, -hv.z)
-        const mag = Math.min(speed, 9)
-        dir.normalize().multiplyScalar(p.strokeImpulse * Math.min(1.5, mag / 5))
-        this.vel.add(dir)
-        sfx.stroke(clamp(mag / 7, 0.4, 1.3))
-        if (hv.y < -1.2) sfx.jetDown()
-        else if (hv.y > 1.2) sfx.jetUp()
-        this.game.fx.bubbles(this._handPos(hand, TMP.v3).clone(), 5, 0.18)
-        this.pulse(hand, p.strokeHaptic * clamp(mag / 6, 0.5, 1), 45)
+      this._wasTouching = touching
+
+      // souffle continu : vitesse des mains + vitesse du corps
+      const hs = this.handVelRel.left.length() + this.handVelRel.right.length()
+      sfx.handRush(Math.max(hs * 0.45, this.vel.length() * 0.5))
+
+      // vitesse maximale (cap réaliste Gorilla Tag)
+      const vmax = p.vrMaxSpeed * this.speedMult
+      if (this.vel.length() > vmax) this.vel.setLength(vmax)
+      // déplacement du rig
+      this.rig.position.addScaledVector(this.vel, dt)
+      // collision du corps
+      this._collideBody()
+      // 4) les mains ne traversent JAMAIS les surfaces : la pénétration
+      //    d'une main repousse tout le corps (ancre physique, comme GT)
+      this._fixHandPenetration()
+    } else {
+      // ================= BUREAU (clavier) =================
+      this.vel.y -= p.gravity * dt
+      const fallCap = -p.fallCapDesktop
+      if (this.vel.y < fallCap) this.vel.y = fallCap
+      this.vel.multiplyScalar(Math.exp(-p.drag * dt))
+      const vmax = p.maxSpeed * this.speedMult
+      if (this.vel.length() > vmax) this.vel.setLength(vmax)
+      this.rig.position.addScaledVector(this.vel, dt)
+      this._collideBody()
+      // souffle continu (bureau : vitesse du corps)
+      sfx.handRush(this.vel.length() * 0.55)
+      // kick de FOV (bureau uniquement — jamais en casque, confort VR)
+      const targetFov = 72 + clamp(this.vel.length() * 0.95, 0, 11)
+      if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+        this.camera.fov = damp(this.camera.fov, targetFov, 6, dt)
+        this.camera.updateProjectionMatrix()
       }
     }
-    // souffle continu : mains rapides + vitesse du corps
-    const rush = Math.max(inVR ? handSpeedSum * 0.5 : 0, this.vel.length() * 0.55)
-    sfx.handRush(rush)
+  }
 
-    // gravité marquée : on sent le poids, la chute est plombée
-    this.vel.y -= p.gravity * dt
-    const fallCap = -(inVR ? p.fallCapVr : p.fallCapDesktop)
-    if (this.vel.y < fallCap) this.vel.y = fallCap
-    this.vel.multiplyScalar(Math.exp(-p.drag * dt))
-    // vitesse maximale
-    const vmax = (inVR ? p.vrMaxSpeed : p.maxSpeed) * this.speedMult
-    if (this.vel.length() > vmax) this.vel.setLength(vmax)
-    // déplacement du rig
-    this.rig.position.addScaledVector(this.vel, dt)
-    // collision du corps
+  // contact main ↔ surface (test sphère, sur une copie pour ne rien déplacer)
+  _handContact(hand) {
+    const test = this._handPos(hand, new THREE.Vector3())
+    return this.game.world.collideSphere(test, CFG.phys.contactRadius).hit
+  }
+
+  // collision du corps (sphère sous la tête) : ressort + amortissement
+  _collideBody() {
     const head = this.camera.getWorldPosition(new THREE.Vector3())
     const center = head.clone().add(new THREE.Vector3(0, -0.18 * this.scaleCur, 0))
     const r = this.bodyRadius
@@ -751,12 +797,19 @@ export class Player {
       if (Math.abs(res.nx) > 0.5 && Math.sign(this.vel.x) === -Math.sign(res.nx)) this.vel.x *= 0.2
       if (Math.abs(res.nz) > 0.5 && Math.sign(this.vel.z) === -Math.sign(res.nz)) this.vel.z *= 0.2
     }
-    // kick de FOV (bureau uniquement — jamais en casque, confort VR)
-    if (!inVR) {
-      const targetFov = 72 + clamp(this.vel.length() * 0.95, 0, 11)
-      if (Math.abs(this.camera.fov - targetFov) > 0.05) {
-        this.camera.fov = damp(this.camera.fov, targetFov, 6, dt)
-        this.camera.updateProjectionMatrix()
+  }
+
+  // anti-traversée façon Gorilla Tag : si une main pénètre une surface,
+  // le corps est repoussé du même pas (les mains sont des ancres solides)
+  _fixHandPenetration() {
+    for (const hand of ['left', 'right']) {
+      const pos = this._handPos(hand, new THREE.Vector3())
+      const before = pos.clone()
+      this.game.world.collideSphere(pos, CFG.phys.contactRadius)
+      const delta = pos.sub(before)
+      if (delta.lengthSq() > 1e-8) {
+        if (delta.length() > 0.25) delta.setLength(0.25)
+        this.rig.position.add(delta)
       }
     }
   }

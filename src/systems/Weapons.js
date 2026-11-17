@@ -1,7 +1,7 @@
 // ============================================================
 // Weapons — modèles d'armes 100% procéduraux (cartoon low-poly)
 // Glock < Uzi < Sniper < Mitrailleuse. Tir géré dans Player.js
-// Contour noir cartoon sur chaque arme.
+// Liseré noir cartoon (rim fresnel) sur chaque arme.
 // ============================================================
 import * as THREE from 'three'
 import { WEAPON_BY_ID } from '../config.js'
@@ -87,7 +87,7 @@ export function buildGunMesh(id) {
     return proto.clone(true)
   }
   const g = BUILDERS[id]()
-  if (CFG.fx.outlines) addOutline(g, { width: CFG.fx.outlineWidth.gun })
+  if (CFG.fx.outlines) addOutline(g, { str: 0.8 })
   cache.set(id, g)
   return g.clone(true)
 }

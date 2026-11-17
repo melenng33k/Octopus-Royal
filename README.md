@@ -1,9 +1,11 @@
 # POULPE ROYALE
 
 **Jeu VR multijoueur en ligne (WebXR) : tu es un poulpe dans un aquarium géant.**
-Nage avec tes mains façon Gorilla Tag, gobes des poissons pour grandir, traque les
-avis de recherche du commissariat, encaisse les primes et achète des armes.
-Après 3 coups reçus, tu relâches un nuage d'encre qui aveugle tes adversaires.
+Déplace-toi EXACTEMENT comme dans Gorilla Tag : tu te pousses avec tes mains sur
+le sol, les rochers, l'épave et les parois — plus un **double saut** en pleine eau.
+Gobes des poissons pour grandir, traque les avis de recherche du commissariat,
+encaisse les primes et achète des armes. Après 3 coups reçus, tu relâches un
+nuage d'encre qui aveugle tes adversaires.
 
 - Plateforme cible : **Meta Quest 2 / 3 / 3S** (navigateur du casque, WebXR) — et un
   **mode bureau** (clavier/souris) pour tester sans casque.
@@ -17,8 +19,8 @@ Après 3 coups reçus, tu relâches un nuage d'encre qui aveugle tes adversaires
 | Demande | Implémentation |
 | --- | --- |
 | Chaque main contrôle 1 tentacule avant | Tentacules physiques (chaînes Verlet) avec collision, 2x plus longs : pendent en suspension sous toi et s'étirent vers tes mains quand tu les bouges |
-| Grands mouvements haut/bas = propulsion | Jet d'eau : main lancée vers le bas te propulse vers le haut |
-| Déplacements réalistes type Gorilla Tag | Poussée de réaction aquatique + poussée sur les surfaces (murs, sol, rochers) — **bonus de vitesse x2-x3 réservé au casque** (le bureau garde ses réglages) |
+| Déplacement EXACTEMENT Gorilla Tag | 100 % physique : vitesse du corps = -(vitesse des mains en contact, relative au corps). Main posée = frein net · main qui pousse = élan proportionnel gardé après le décollage · 2 mains = vitesses cumulées · les mains sont des ancres qui ne traversent jamais les surfaces · aucune poussée dans le vide |
+| **Double saut dans l'eau** | **A ou X** (n'importe quelle main) : 2 charges dès le début, recharge 1,5 s — utilisable même en pleine eau pour reprendre de la hauteur |
 | Poissons qui se baladent et t'évitent | IA errance + fuite douce : ils nagent lentement, t'aperçoivent tard et sont largement rattrapables (rayon d'attrape généreux) |
 | Attraper à la gâchette puis manger | Gâchette (sans arme) ou gâchette latérale : saisir, re-presser : manger |
 | Manger → grandir, vie, vitesse, dégâts | +1 poisson = taille, pv max, vitesse et dégâts de tentacule accrus |
@@ -27,13 +29,13 @@ Après 3 coups reçus, tu relâches un nuage d'encre qui aveugle tes adversaires
 | Somme indiquée sur l'affiche | Prime en ¢ calculée sur le niveau de la cible, affichée et encaissée au kill |
 | Armes de plus en plus chères | Glock 500 ¢ → Uzi 1200 ¢ → Sniper 2500 ¢ → Mitrailleuse 5000 ¢ (armurerie du commissariat **ou menu-montre**) |
 | 3 coups reçus → nuage d'encre | Compteur HUD, encre automatique qui cache la vue des autres (et des vois IA) |
-| Double saut, dash, camouflage | Débloqués à 10 / 25 / 50 poissons mangés |
+| Double saut, dash, camouflage | Double saut actif dès le départ ; dash à 25 poissons, camouflage à 50 |
 | **Montre-boussole (VR)** | Accrochée à ta tentacule gauche : son aiguille pointe toujours vers le commissariat ; **touche-la pour ouvrir ton menu** (armurerie, son, téléport commissariat) |
 | **Grand bassin** | Aquarium 72 × 46 × 22 m, décor densifié, brume adaptée |
 | **Rendu cinéma** | Tone mapping ACES, ombres douces, caustiques animées sur le sable, surface d'eau ondulante au-dessus du bassin (shader), rayons de lumière volumétriques, plancton en suspension, algues balancées par le GPU |
-| **Contour noir cartoon** | Inverted hull sur les poulpes, poissons, tentacules, armes et props (compatible squelettes animés) |
-| **Vrais modèles 3D (CC0)** | 12 espèces de poissons Quaternius animés (nage normale/rapide) + requin, raie manta et dauphins d'ambiance ; épave de navire, coffre au trésor qui s'ouvre quand tu t'approches, barils, caisses, rochers et bouées Kenney — voir `src/assets/models/CREDITS.md` |
-| **Nage satisfaisante** | Coups de rame francs : impulsion bonus, vibration des manettes, souffle d'eau, bulles ; le corps s'incline dans ton mouvement (jamais la caméra) |
+| **Contour noir cartoon** | Liseré noir « rim fresnel » injecté dans les shaders des poulpes, poissons, tentacules, armes et props — aucune géométrie ajoutée, robuste en VR (plus d'écran noir ni de débris), coût GPU quasi nul |
+| **Vrais modèles 3D (CC0)** | 12 espèces de poissons Quaternius animés (nage normale/rapide) + requin, raie manta et dauphins d'ambiance ; **épave de galion** (Quaternius) penchée et semi-enfoncée dans le sable, coffre au trésor qui s'ouvre quand tu t'approches, barils, caisses, rochers et bouées Kenney — voir `src/assets/models/CREDITS.md` |
+| **Nage satisfaisante** | Chaque poussée est juteuse : vibration des manettes au décollage, souffle d'eau, bulles ; le corps s'incline dans ton mouvement (jamais la caméra) |
 
 ## Jouer (Meta Quest)
 
@@ -49,12 +51,10 @@ Après 3 coups reçus, tu relâches un nuage d'encre qui aveugle tes adversaires
 
 | Action | Entrée |
 | --- | --- |
-| Nager (nage directionnelle) | **Le sens du balayage de tes mains décide où tu vas** : avant → arrière = avancer · gauche → droite = aller à gauche (et inversement) · haut → bas = plonger · bas → haut = remonter |
-| Coup de rame boosté | Balayer vite : impulsion + vibration + souffle d'eau |
-| Se pousser (murs, sol) | Appuyer la main sur une surface et la pousser |
+| **Se déplacer (Gorilla Tag)** | **Pose tes mains sur une surface et pousse** : sol, rochers, épave, parois. Main vers l'arrière = avancer · vers le bas = monter · vers l'avant = reculer. Pose une main sans bouger = frein. Grand gifle = gros élan |
+| **Double saut (pleine eau)** | **A** ou **X** — 2 charges, recharge 1,5 s |
 | Attraper un poisson / tirer | Gâchette index (sans arme : attraper ; avec arme : tirer) |
 | Saisir / manger le poisson tenu | Gâchette latérale (grip) |
-| Saut propulsé (x2 au niveau 10 poissons) | **A** ou **X** |
 | Dash (25 poissons) | **B** ou **Y** |
 | Camouflage (50 poissons) | **Stick droit cliqué** |
 | Changer d'arme | Stick droit gauche/droite |
@@ -162,7 +162,7 @@ src/
 | « VR INDISPONIBLE » | Ouvre le site **dans le navigateur de la Quest**, en HTTPS |
 | On ne se voit pas entre joueurs | Vérifie la même URL/salle ; NAT strict → ajoute TURN (`net.turn`) |
 | Lags | Le P2P dépend des connexions ; rester dans la même région aide |
-| Tu coules sans arrêt | Normal : tu es dans l'eau, remue les mains (ou Z/Espace en bureau) |
+| Tu es bloqué en pleine eau | Pose une main contre une paroi et pousse, ou **double saut A/X** (2 charges) pour revenir à une surface |
 | Recomencer sa progression | Vide le localStorage du site |
 
 ## Notes de conception
@@ -172,7 +172,10 @@ src/
   seuls toi et ton chasseur les voyez, ce qui garantit 3 primes disponibles même seul.
 - Performance Quest : géométries fusionnées, modèle de poulpe optimisé (~38 k triangles,
   quantifié, ~1,4 Mo), pixel ratio limité — vise 72 Hz.
-- La vitesse de nage aux mains est **amplifiée uniquement en casque** (`phys.vrSwimMult`,
-  `vrPushMult`, `vrJetMult`, `vrMaxSpeed` dans `config.js`) ; le mode bureau n'est pas touché.
+- Le déplacement est **100 % physique** (formule Gorilla Tag) : vitesse du corps =
+  -(vitesse des mains en contact, relative au corps), lissée sur 4 frames.
+  Tout l'équilibrage est dans `phys.*` (`config.js`) : `gtGain` (force de poussée),
+  `contactRadius` (surface de contact des mains), `gravity`, `drag`, `vrMaxSpeed`.
+  Le mode bureau garde sa nage clavier classique.
 
 Licence : MIT — amuse-toi bien et partage tes améliorations.

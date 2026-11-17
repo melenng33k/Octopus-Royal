@@ -11,7 +11,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { CFG } from '../config.js'
 import { rand, randi, clamp } from '../utils.js'
-import { addOutline } from './Outline.js'
+import { addOutline, applyRimMaterial } from './Outline.js'
 
 const C = {
   sand: 0xe3cf9e,
@@ -57,8 +57,8 @@ function dotTexture() {
   return World._dotTex
 }
 
-// ---- chargement des props (GLB Kenney, textures incorporées) ----
-const PROPS = import.meta.glob('../assets/models/k_*.glb', { eager: true, query: '?url', import: 'default' })
+// ---- chargement des props (GLB Kenney / Quaternius, textures incorporées) ----
+const PROPS = import.meta.glob('../assets/models/*.glb', { eager: true, query: '?url', import: 'default' })
 const propUrl = (name) => {
   const key = Object.keys(PROPS).find(k => k.endsWith('/' + name + '.glb'))
   return key ? PROPS[key] : null
@@ -369,11 +369,13 @@ export class World {
 
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.02 })
     const rockMesh = new THREE.Mesh(mergeGeometries(rockGeos), mat)
-    const coralMesh = new THREE.Mesh(mergeGeometries(coralGeos), mat.clone())
+    const coralMat = mat.clone()
+    applyRimMaterial(coralMat, { str: 0.8 })
+    const coralMesh = new THREE.Mesh(mergeGeometries(coralGeos), coralMat)
     const pipeMesh = new THREE.Mesh(mergeGeometries(pipeGeos), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.35, side: THREE.DoubleSide }))
     rockMesh.castShadow = rockMesh.receiveShadow = true
-    if (CFG.fx.outlines) addOutline(rockMesh, { width: CFG.fx.outlineWidth.rock })
-    if (CFG.fx.outlines) addOutline(pipeMesh, { width: CFG.fx.outlineWidth.prop })
+    addOutline(rockMesh)
+    addOutline(pipeMesh)
     this.group.add(rockMesh, coralMesh, pipeMesh)
   }
 
@@ -392,6 +394,9 @@ export class World {
           transformed.z += cos(uTime * 0.9 + position.x * 0.4) * 0.16 * uv.y * uv.y;`)
       this.weedShader = shader
     }
+    // liseré noir cartoon : injecté APRÈS le balancement pour chaîner
+    // les deux patchs shader (applyRimMaterial enveloppe onBeforeCompile)
+    applyRimMaterial(mat, { str: 0.85 })
     const geos = []
     for (let i = 0; i < 22; i++) {
       const x = rand(-w / 2 + 2, w / 2 - 2), z = rand(-d / 2 + 1.5, d / 2 - 3)
@@ -590,9 +595,9 @@ export class World {
     g.add(desk)
     this.colliders.push({ x: 1, y: 0.72, z: this.d / 2 - 1.6, r: 1.5 })
     if (CFG.fx.outlines) {
-      addOutline(wall, { width: CFG.fx.outlineWidth.prop })
-      addOutline(sign, { width: CFG.fx.outlineWidth.prop })
-      addOutline(desk, { width: CFG.fx.outlineWidth.prop })
+      addOutline(wall)
+      addOutline(sign)
+      addOutline(desk)
     }
     this.group.add(g)
 
@@ -604,10 +609,10 @@ export class World {
   }
 
   // ============================================================
-  // PROPS 3D réels (Kenney CC0) : épave, coffre animé, barils,
-  // caisses, rochers sculptés, bouées flottantes.
+  // PROPS 3D réels (Kenney / Quaternius CC0) : épave de galion,
+  // coffre animé, barils, caisses, rochers sculptés, bouées.
   // ============================================================
-  _placeModel(scene3d, { pos, rotY = 0, rotZ = 0, size, tint = null, colliders = null, outlineW = null, shadow = true }) {
+  _placeModel(scene3d, { pos, rotY = 0, rotZ = 0, size, tint = null, colliders = null, rim = null, shadow = true, doubleSide = false }) {
     // inclinaison AVANT les calculs de pose
     if (rotZ) scene3d.rotation.z = rotZ
     // normalisation d'échelle : plus grande dimension -> size (m)
@@ -639,9 +644,11 @@ export class World {
           o.material.color.lerp(new THREE.Color(tint), 0.25)
         }
         o.material && (o.material.roughness = 0.75)
+        // voiles / feuilles simple-face : visibles de partout sous l'eau
+        if (doubleSide && o.material) o.material.side = THREE.DoubleSide
       }
     })
-    if (CFG.fx.outlines && outlineW) addOutline(scene3d, { width: outlineW / Math.max(0.05, k) })
+    if (rim) addOutline(scene3d, rim === true ? {} : rim)
     this.group.add(holder)
     if (colliders) {
       for (const c of colliders) {
@@ -652,29 +659,29 @@ export class World {
   }
 
   _buildModelProps() {
-    const OW = CFG.fx.outlineWidth ? CFG.fx.outlineWidth.prop : 0.02
     const { w, d, h } = this
 
-    // --- ÉPAVE DE NAVIRE (pièce maîtresse du coin nord-ouest) ---
-    // pas de contour : c'est un treillis de planches fines, l'inverted hull
-    // remplirait tous les interstices de noir
-    loadProp('k_pirate_ship-wreck').then(s => {
+    // --- ÉPAVE DE NAVIRE (galion Quaternius, pièce maîtresse du coin
+    //     nord-ouest) : coque complète, 3 mâts et voiles, penchée et
+    //     semi-enfoncée dans le sable. Rim léger (grande surface) et
+    //     faces doubles pour que les voiles restent visibles de partout.
+    loadProp('q_ship_sailship').then(s => {
       if (!s) return
       this._placeModel(s, {
-        pos: [-22, 0.2, -12], rotY: 2.55, rotZ: 0.16, size: 14,
+        pos: [-22, -0.55, -12], rotY: 2.55, rotZ: 0.3, size: 16,
         tint: 0x5a7a68,
-        colliders: [[-24.5, 2, -10.5, 2.4], [-21.5, 2.4, -13.5, 2.4], [-19, 1.4, -15, 2]],
-        outlineW: null
+        colliders: [[-25.5, 1.8, -7.8, 2.6], [-22, 2.4, -12, 2.8], [-18.6, 1.6, -16.4, 2.4]],
+        rim: { str: 0.6 },
+        doubleSide: true
       })
     })
 
     // --- COFFRE AU TRÉSOR (animé : s'ouvre quand on s'approche) ---
-    // pas de contour : couvercle et bandes fines, l'inverted hull bave
     loadProp('k_pirate_chest').then(s => {
       if (!s) return
       const holder = this._placeModel(s, {
         pos: [15.5, 0.15, -7.5], rotY: -0.9, size: 1.1,
-        colliders: [[15.5, 0.6, -7.5, 0.65]], outlineW: null
+        colliders: [[15.5, 0.6, -7.5, 0.65]], rim: true
       })
       const mixer = new THREE.AnimationMixer(s)
       const clips = {}
@@ -701,7 +708,7 @@ export class World {
         if (!s) return
         this._placeModel(s, {
           pos: [x, 0.15, z], rotY: ry, size: 1.05,
-          colliders: [[x, 0.55, z, 0.55]], outlineW: OW
+          colliders: [[x, 0.55, z, 0.55]], rim: true
         })
       })
     }
@@ -711,7 +718,7 @@ export class World {
         if (!s) return
         this._placeModel(s, {
           pos: [x, 0.15, z], rotY: ry, size: 1.0,
-          colliders: [[x, 0.5, z, 0.6]], outlineW: OW
+          colliders: [[x, 0.5, z, 0.6]], rim: true
         })
       })
     }
@@ -731,7 +738,7 @@ export class World {
         const inst = s.clone(true)
         this._placeModel(inst, {
           pos: [x, 0.15, z], rotY: ry, size,
-          colliders: [[x, 0.8, z, size * 0.42]], outlineW: CFG.fx.outlineWidth.rock
+          colliders: [[x, 0.8, z, size * 0.42]], rim: true
         })
       })
     }
@@ -743,7 +750,7 @@ export class World {
       loadProp('k_buoy').then(s => {
         if (!s) return
         const inst = s.clone(true)
-        const holder = this._placeModel(inst, { pos: [x, h - 0.7, z], size: 1.4, shadow: false, outlineW: OW })
+        const holder = this._placeModel(inst, { pos: [x, h - 0.7, z], size: 1.4, shadow: false, rim: true })
         this.buoys.push({ holder, baseY: h - 0.7, phase: rand(0, Math.PI * 2) })
       })
     }

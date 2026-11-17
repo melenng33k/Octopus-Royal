@@ -11,32 +11,26 @@ export const CFG = {
     h: 22    // hauteur  (axe Y : 0 .. 22)
   },
 
-  // ---------- Physique / nage ----------
-  // NOUVELLE NAGE DIRECTIONNELLE (casque) : le sens du balayage des mains
-  // décide de la direction :  haut->bas = descendre,  avant->arrière = avancer,
-  //  gauche->droite = aller à gauche (et inversement dans chaque axe).
+  // ---------- Physique / déplacement ----------
+  // DÉPLACEMENT GORILLA TAG (casque) : 100 % physique. On se pousse AVEC
+  // LES MAINS sur les surfaces (sol, rochers, épave, parois). Tant qu'une
+  // main touche une surface, la vitesse du corps = -(vitesse de la main
+  // relative au corps). Main posée sans bouger = frein (on s'arrête net).
+  // Main qui pousse fort = gros élan gardé après le décollage.
+  // Aucune nage "dans le vide" : que du vrai contact, comme dans le jeu.
   phys: {
-    gravity: 4.0,        // gravité marquée : on SENT le poids (chute plombée)
+    gravity: 4.5,        // gravité marquée : on sent le poids sous l'eau
+    fallCapVr: 4.6,      // vitesse de chute max CASQUE (m/s)
     fallCapDesktop: 0.8, // vitesse de chute max BUREAU (m/s)
-    fallCapVr: 2.2,      // vitesse de chute max CASQUE (m/s) — plongeons rapides
-    drag: 1.15,          // traînée de l'eau (par seconde, exponentiel) : glisse ++
-    swimGain: 0.46,      // poussée de réaction X/Z : ramer avant->arrière = avancer
-    swimGainY: 0.62,     // poussée verticale DIRECTE : haut->bas = descendre
-    speedBoost: 0.14,    // gain bonus proportionnel à la vitesse de main (coups francs)
-    pushGain: 0.95,      // poussée "Gorilla Tag" : se pousser sur une surface
-    maxSpeed: 6.5,       // vitesse max BUREAU (m/s) avant bonus de croissance
-    // Bonus de vitesse RÉSERVÉS AU CASQUE (WebXR) — le bureau garde maxSpeed :
-    vrSwimMult: 3.4,     // x3.4 sur la poussée de nage aux mains
-    vrSwimYMult: 2.6,    // x2.6 sur la poussée verticale directe
-    vrPushMult: 2.4,     // x2.4 sur la poussée Gorilla Tag sur surfaces
-    vrMaxSpeed: 21,      // vitesse max en VR (m/s) : ça PÈQUE vraiment
-    bodyRadius: 0.4,     // rayon du corps (x échelle de croissance)
+    drag: 1.05,          // traînée de l'eau (quand on glisse sans contact)
+    gtGain: 1.0,         // force de la poussée Gorilla Tag (1 = fidèle au jeu)
+    contactRadius: 0.13, // rayon de détection main ↔ surface (généreux, anti-jitter)
+    penFix: 1.0,         // correction anti-traversée : les mains bloquent le corps
     handRadius: 0.07,
-    // --- juice des mouvements (satisfaction) ---
-    strokeThreshold: 2.6,  // vitesse de main (m/s) qui déclenche un "coup de rame"
-    strokeCooldown: 0.28,  // délai min entre deux coups de rame par main (s)
-    strokeImpulse: 0.85,   // impulsion bonus sur chaque coup de rame (m/s)
-    strokeHaptic: 0.65,    // force de la vibration casque sur un coup de rame
+    bodyRadius: 0.4,     // rayon du corps (x échelle de croissance)
+    launchHaptic: 0.55,  // vibration quand on décolle d'une surface avec de l'élan
+    maxSpeed: 6.5,       // vitesse max BUREAU (m/s) avant bonus de croissance
+    vrMaxSpeed: 12,      // vitesse max CASQUE (m/s) : élan Gorilla Tag réaliste
     hapticEnabled: true
   },
 
@@ -108,8 +102,8 @@ export const CFG = {
 
   // ---------- Capacités ----------
   abilities: {
-    jumpImpulse: 3.6,     // saut propulsé (A / X)
-    jumpRecharge: 2.2,    // délai de recharge d'une charge de saut
+    jumpImpulse: 4.6,     // DOUBLE SAUT propulsé (A / X) — marche aussi en pleine eau
+    jumpRecharge: 1.5,    // délai de recharge d'une charge de saut
     dashSpeed: 9.5,       // dash (B / Y)
     dashCooldown: 2.5,
     camoDuration: 8,      // camouflage (stick droit cliqué)
@@ -157,10 +151,12 @@ export const CFG = {
 
   // ---------- Rendu / effets ----------
   fx: {
-    outlines: true,        // contour noir cartoon (inverted hull)
-    outlineWidth: {        // épaisseur par type (espace objet)
-      tentacle: 0.014, fish: 0.014, gun: 0.005,
-      prop: 0.01, rock: 0.012, octo: 0.045
+    outlines: true,        // liseré noir cartoon (rim fresnel dans les shaders)
+    rim: {                 // réglage du liseré (voir core/Outline.js)
+      str: 0.9,            // force du noir sur la silhouette (0..1)
+      lo: 0.5,             // seuil bas : en dessous de cet angle, aucune trace
+      hi: 0.92,            // seuil haut : au-delà, noir complet
+      color: 0x05070c      // couleur du liseré (noir bleuté)
     },
     caustics: true,        // caustiques lumineuses animées sur le sable
     waterCeiling: true,    // surface d'eau ondulante au-dessus du bassin

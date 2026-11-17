@@ -1,106 +1,122 @@
 // ============================================================
-// Outline — contour noir façon cartoon (inverted hull)
-// Un second mesh (matériau noir, BackSide) partage la géométrie :
-// les sommets sont poussés le long de la normale (espace objet),
-// ce qui dessine un liseré noir fin autour du modèle.
-// Compatible meshes skinnés (même squelette partagé) et statiques.
+// Outline — liseré noir façon cartoon (RIM fresnel) — v2 ROBUSTE
+// ============================================================
+// ANCIENNE TECHNIQUE (inverted hull) : un mesh noir jumeau poussé
+// le long des normales, rendu en BackSide. Bugs constatés en VR
+// première personne :
+//   - caméra à l'intérieur de la coquille (poulpe, tentacules,
+//     requin) -> tout l'écran devient noir ;
+//   - modèles skinnés à géométrie fine -> débris noirs hachurés ;
+//   - tube noir des tentacules recalculé sur CPU à chaque frame.
+// NOUVELLE TECHNIQUE : assombrissement fresnel injecté dans le
+// fragment shader des matériaux. Les faces vues en angle rasant
+// (bord de silhouette) glissent vers le noir, le centre reste
+// intact. AUCUNE géométrie ajoutée -> rien ne peut « exploser ».
+// Compatible meshes skinnés, morphs, échelles non uniformes,
+// matériaux transparents (camouflage) et fog. Coût : ~4
+// instructions par fragment, zéro draw call supplémentaire.
 // ============================================================
 import * as THREE from 'three'
+import { CFG } from '../config.js'
 
-const outlineMats = new Map()
-
-// matériau contour partagé (par largeur) — exporté pour les skinnés
-export function outlineMaterial(width) {
-  const key = Math.round(width * 10000)
-  if (outlineMats.has(key)) return outlineMats.get(key)
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0x05070a,
-    side: THREE.BackSide,
-    fog: false,
-    toneMapped: false
-  })
-  mat.userData.outlineWidth = width
-  mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uOutlineW = { value: width }
-    // MeshBasicMaterial ne définit objectNormal que si USE_SKINNING/USE_ENVMAP :
-    // on pousse le long de la normale skinnée si disponible, sinon l'attribut normal.
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>\nuniform float uOutlineW;`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-        #ifdef USE_SKINNING
-          transformed += objectNormal * uOutlineW;
-        #else
-          transformed += normal * uOutlineW;
-        #endif`)
+// paramètres par défaut (CFG.fx.rim) : str = force du noir,
+// lo/hi = seuils d'angle (0 = face caméra, 1 = silhouette),
+// color = couleur du liseré.
+export function rimDefaults(over = {}) {
+  const r = (CFG.fx && CFG.fx.rim) || {}
+  return {
+    str: over.str ?? r.str ?? 0.9,
+    lo: over.lo ?? r.lo ?? 0.5,
+    hi: over.hi ?? r.hi ?? 0.92,
+    color: over.color ?? r.color ?? 0x05070c
   }
-  mat.customProgramCacheKey = () => 'outline' + key
-  outlineMats.set(key, mat)
+}
+
+const RIM_DEFS = /* glsl */`
+uniform float uRimStr;
+uniform float uRimLo;
+uniform float uRimHi;
+uniform vec3  uRimCol;
+`
+
+// Points d'ancrage du fragment shader selon les versions de three :
+// on écrit le liseré juste avant l'écriture de gl_FragColor (le fog
+// et le tone mapping s'appliquent ensuite, comme au reste de la scène).
+const RIM_CHUNK = /* glsl */`
+  // RIM cartoon : assombrit les angles rasants (silhouette)
+  {
+    vec3 rimN = normalize(normal);
+    vec3 rimV = normalize(vViewPosition);
+    float rimD = 1.0 - abs(dot(rimN, rimV));
+    float rimF = smoothstep(uRimLo, uRimHi, rimD) * uRimStr;
+    outgoingLight = mix(outgoingLight, uRimCol, rimF);
+  }
+`
+
+// Patche UN matériau avec le liseré fresnel (idempotent).
+// Fonctionne sur les matériaux éclairés (standard/physical/lambert/
+// phong) qui exposent `normal` et `vViewPosition` en fragment.
+// Les ShaderMaterial (ciel, surface d'eau) et sprites sont ignorés.
+export function applyRimMaterial(mat, over = {}) {
+  if (!mat || mat.isShaderMaterial || mat.userData.__rim) return mat
+  if (mat.isSpriteMaterial || mat.isLineBasicMaterial || mat.isPointsMaterial) return mat
+  // types supportés : le fragment doit avoir `normal` + `vViewPosition`
+  const lit = mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial ||
+              mat.isMeshLambertMaterial || mat.isMeshPhongMaterial
+  if (!lit) return mat
+
+  const { str, lo, hi, color } = rimDefaults(over)
+  mat.userData.__rim = { str, lo, hi, color }
+
+  const uniforms = {
+    uRimStr: { value: str },
+    uRimLo: { value: lo },
+    uRimHi: { value: hi },
+    uRimCol: { value: new THREE.Color(color) }
+  }
+
+  const prev = mat.onBeforeCompile
+  mat.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev(shader, renderer)
+    if (!shader.fragmentShader.includes('vViewPosition')) return // sécurité
+    Object.assign(shader.uniforms, uniforms)
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + RIM_DEFS)
+    const anchor = shader.fragmentShader.includes('#include <opaque_fragment>')
+      ? '#include <opaque_fragment>'
+      : '#include <output_fragment>'
+    shader.fragmentShader = shader.fragmentShader
+      .replace(anchor, RIM_CHUNK + '\n' + anchor)
+  }
+  // clé de cache : des valeurs différentes -> programmes séparés
+  // (les uniforms restent par matériau, donc aucune fuite d'état)
+  const prevKeyFn = mat.customProgramCacheKey
+  mat.customProgramCacheKey = () => {
+    const base = prevKeyFn ? prevKeyFn.call(mat) : (mat.type || 'lit')
+    return `${base}|rim_${str}_${lo}_${hi}_${color}`
+  }
   return mat
 }
 
-// Crée la coquille outline d'un mesh (statique OU skinné) et l'ajoute
-// comme enfant du mesh source (hérite de la transformation).
-// La poussée est bornée à 8% du rayon de la géométrie : certains GLB
-// skinnés contiennent des micro-maillages (nageoires) sur un grand
-// squelette — une poussée absolue les ferait exploser.
-function hullFor(mesh, width) {
-  // garde-fou : géométrie dégénérée (helpers exportés dans certains GLB,
-  // ex. Group_2 de l'épave Kenney, boundingSphere ~1e36) -> pas de contour
-  if (mesh.geometry) {
-    width = computeHullWidth(mesh.geometry, width)
-    if (width <= 0) return null
-  }
-  const mat = outlineMaterial(width)
-  let hull
-  if (mesh.isSkinnedMesh) {
-    hull = new THREE.SkinnedMesh(mesh.geometry, mat)
-    hull.skeleton = mesh.skeleton
-    hull.bindMatrix.copy(mesh.bindMatrix)
-    hull.bindMatrixInverse.copy(mesh.bindMatrixInverse)
-    if (mesh.bindMode) hull.bindMode = mesh.bindMode
-    hull.frustumCulled = false
-    hull.name = mesh.name + '_outline'
-  } else {
-    hull = new THREE.Mesh(mesh.geometry, mat)
-    hull.name = (mesh.name || 'mesh') + '_outline'
-  }
-  hull.renderOrder = (mesh.renderOrder || 0) - 1
-  mesh.add(hull)
-  return hull
-}
-
-// Largeur de poussée pour une géométrie donnée : bornée à 8% de son rayon
-// (micro-maillages skinnés) et quantisée (limite les programmes GLSL).
-export function computeHullWidth(geometry, width) {
-  if (!geometry) return width
-  if (!geometry.boundingSphere) geometry.computeBoundingSphere()
-  const r = geometry.boundingSphere ? geometry.boundingSphere.radius : 0
-  if (!isFinite(r) || r > 500) return 0 // géométrie dégénérée : pas de contour
-  const w = Math.max(0.0015, Math.min(width, r * 0.08))
-  return Math.round(w * 1000) / 1000
-}
-
 /**
- * Ajoute un contour noir fin à tous les meshes d'un sous-arbre.
- * opts : { width = 0.02, skip = fn(mesh)->bool, scaleWithObject = false }
- * Retourne la liste des coquilles créées.
+ * Applique le liseré noir à tous les matériaux d'un sous-arbre.
+ * opts : { str, lo, hi, color, skip = fn(mesh)->bool }
+ * Retourne la liste des matériaux patchés (dédupliqués).
  */
-export function addOutline(root, { width = 0.02, skip = null } = {}) {
-  // 1) collecter d'abord (on ne peut pas ajouter d'enfants pendant traverse :
-  //    le nouveau mesh serait visité et créerait une récursion infinie)
-  const meshes = []
+export function addOutline(root, { skip = null, ...over } = {}) {
+  if (!CFG.fx || !CFG.fx.outlines) return []
+  const mats = new Set()
   root.traverse((o) => {
     if (!o.isMesh || o.userData.isOutline) return
-    if (skip && skip(o)) return
-    // pas de contour sur les sprites / plans UI
     if (o.material && o.material.isSpriteMaterial) return
-    meshes.push(o)
+    if (skip && skip(o)) return
+    if (o.material) mats.add(o.material)
   })
-  // 2) puis créer les coquilles
-  const created = []
-  for (const m of meshes) {
-    const h = hullFor(m, width)
-    if (h) created.push(h)
+  const patched = []
+  for (const m of mats) {
+    if (m.userData.__rim) { patched.push(m); continue }
+    applyRimMaterial(m, over)
+    patched.push(m)
   }
-  return created
+  return patched
 }

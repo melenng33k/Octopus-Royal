@@ -14,7 +14,7 @@ import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js'
 import { mergeGeometries as mergeGeos } from 'three/addons/utils/BufferGeometryUtils.js'
 import { CFG } from '../config.js'
 import { rand, randi, clamp, damp } from '../utils.js'
-import { outlineMaterial, computeHullWidth } from './Outline.js'
+import { applyRimMaterial } from './Outline.js'
 
 // --- Espèces (CC0 Quaternius) : url relative depuis src/assets/models ---
 const SMALL_SPECIES = [
@@ -181,11 +181,9 @@ export class FishSchool {
     inst.scale.setScalar(spec.loaded.fitScale)
     if (spec.loaded.yawFix) inst.rotation.y = spec.loaded.yawFix
     const mats = []
-    const hulls = []
-    // teinte unique par poisson (léger décalage HSL) + contour noir
+    // teinte unique par poisson (léger décalage HSL) + liseré noir
     const hShift = rand(-0.045, 0.045)
     const vMul = rand(0.88, 1.14)
-    // collecter d'abord (les hulls ajoutés pendant traverse créeraient une récursion)
     const skinMeshes = []
     inst.traverse(o => { if (o.isMesh && o.material) skinMeshes.push(o) })
     for (const o of skinMeshes) {
@@ -202,21 +200,10 @@ export class FishSchool {
       o.frustumCulled = true // bbox bind-pose : largement suffisant pour culler
       o.castShadow = f.big && CFG.fx.shadows // seuls les grands hôtes portent ombre
       mats.push(o.material)
-      if (CFG.fx.outlines) {
-        const w0 = CFG.fx.outlineWidth.fish / Math.max(0.12, spec.loaded.fitScale)
-        const w = computeHullWidth(o.geometry, w0)
-        if (w > 0) {
-          const hull = new THREE.SkinnedMesh(o.geometry, outlineMaterial(w))
-          hull.skeleton = o.skeleton
-          hull.bindMatrix.copy(o.bindMatrix)
-          hull.bindMatrixInverse.copy(o.bindMatrixInverse)
-          if (o.bindMode) hull.bindMode = o.bindMode
-          hull.frustumCulled = true
-          hull.renderOrder = -1
-          o.add(hull)
-          hulls.push(hull)
-        }
-      }
+      // liseré noir cartoon : rim fresnel (aucune coquille skinnée :
+      // plus de débris noirs sur les nageoires ni d'écran noir si on
+      // nage dans le requin)
+      applyRimMaterial(o.material)
     }
     g.add(inst)
     const mixer = new THREE.AnimationMixer(inst)
@@ -237,7 +224,7 @@ export class FishSchool {
     if (actions.swim && actions.fast) actions.fast.setEffectiveWeight(0)
     f.mesh = g
     f.pos = g.position
-    f.model = { root: g, inst, mixer, actions, mats, hulls, spec }
+    f.model = { root: g, inst, mixer, actions, mats, spec }
     // recopie l'état actuel
     g.position.copy(f.pos)
     this.scene.add(g)
