@@ -19,14 +19,32 @@ utilisables librement, y compris commercialement, sans attribution obligatoire.
 - L'épave est posée penchée et semi-enfoncée dans le sable ; teinte algue
   appliquée par le jeu.
 
-## Props & rochers — Kenney (CC0)
-- Source : https://kenney.nl/assets (kits « Pirate Kit », « Watercraft Pack »)
+## Props — Kenney (CC0)
+- Source : https://kenney.nl/assets (kit « Pirate Kit », « Watercraft Pack »)
 - Miroir utilisé : https://github.com/shorepine/kenney (3d/pirate, 3d/watercraft)
 - Fichiers : k_pirate_chest.glb (coffre animé), k_pirate_barrel.glb,
-  k_pirate_crate.glb, k_pirate_rocks-a/b/c.glb, k_buoy.glb (bouée flottante)
+  k_pirate_crate.glb, k_buoy.glb (bouée flottante)
 - La texture colormap.png a été incorporée dans chaque .glb pour le bundling.
-- (L'ancien « ship-wreck » de Kenney, un treillis de planches illisible,
-  a été remplacé par le galion Quaternius ci-dessus.)
+- (Les anciens « ship-wreck » et « rocks » de Kenney, à la géométrie cassée,
+  ont été remplacés par le galion Quaternius et les rochers Polyfork.)
+
+## Récif corallien — Polyfork (CC BY 4.0)
+- Source : https://polyfork.dev — kit « Coral Reef » (54 pièces low-poly)
+- Ligne de crédit officielle (par modèle) :
+  `<a href="https://polyfork.dev/asset/{id}">{Nom}</a> by <a href="https://polyfork.dev">Polyfork</a>, CC BY 4.0`
+- Fichiers utilisés (préfixe pf_) :
+  - Rochers & matrices : pf_small-reef-rock-99062d, pf_encrusted-reef-boulder-972d95,
+    pf_reef-rubble-terrain-blob-df5888, pf_coral-bommie-772b22, pf_coral-pinnacle-0d9756
+  - Coraux : pf_brain-coral-head-7db21a, pf_lettuce-coral-e16e43, pf_mushroom-coral-a2906e,
+    pf_pillar-coral-b6deba, pf_staghorn-coral-422d23, pf_soft-coral-tree-450af0,
+    pf_table-coral-193fa6, pf_sea-fan-bafd49
+  - Éponges (remplacent les anciens tuyaux) : pf_tube-sponge-df576b, pf_barrel-sponge-ab460c
+  - Algues : pf_seagrass-tuft-862cc5, pf_broad-algae-frond-88a644, pf_sea-whip-e56668
+  - Faune animée : pf_giant-clam-6408ba (Idle/React), pf_sea-anemone-9c2a94 (Idle/React),
+    pf_sea-urchin-b599d4 (Idle/Crawl), pf_moon-jellyfish-0fa43c (Idle/Swim/Swim fast),
+    pf_starfish-772749
+- Utilisation : géométries cuites et fusionnées en 1-2 draw calls (statique),
+  clones SkeletonUtils + AnimationMixer pour la faune.
 
 ## Poulpe — octo.glb
 - Modèle « Baby Octopus » animé, déjà présent dans le projet d'origine.

@@ -106,6 +106,15 @@ export class Player {
     this.handVelRel = { left: new THREE.Vector3(), right: new THREE.Vector3() }
     // lissage type GT : moyenne des dernières vitesses de main
     this._handVelHist = { left: [], right: [] }
+    // nouvelle session casque : historique de positions des mains remis à
+    // zéro pour ne pas créer une fausse vitesse au retour dans le casque
+    this.renderer.xr.addEventListener('sessionstart', () => {
+      this._xrPosPrev.has = false
+      this._handVelHist.left.length = 0
+      this._handVelHist.right.length = 0
+      this.handVelRel.left.set(0, 0, 0)
+      this.handVelRel.right.set(0, 0, 0)
+    })
     // contact main ↔ surface (par main)
     this.handTouching = { left: false, right: false }
     this._wasTouching = false
@@ -647,15 +656,26 @@ export class Player {
     }
 
     // vitesse des mains RELATIVE au corps — LE cœur de Gorilla Tag.
-    // C'est exactement (position_main - position_corps) dérivée : la main
-    // posée sur une surface (qui bouge avec le corps) a une vitesse
-    // relative NULLE -> frein. La main qui pousse -> poussée proportionnelle.
+    // On mesure la main DANS LE REPÈRE DU RIG (position monde − position du
+    // rig) : c'est le tracking PUR, c'est-à-dire exactement la main vue depuis
+    // le corps. La main posée sur une surface sans bouger → vitesse relative
+    // NULLE → frein. La main qui pousse → poussée proportionnelle.
+    // Correctif caméra qui vibrait violemment de haut en bas dès qu'on
+    // touchait le sol (2 causes) :
+    //  1. les corrections de collision (_collideBody / _fixHandPenetration)
+    //     déplacent le rig d'un coup : mesurées en coordonnées monde, elles
+    //     polluaient la vitesse de main → poussée inversée → nouveau choc →
+    //     boucle oscillante. Dans le repère du rig, main ET rig bougent
+    //     ensemble → elles s'annulent EXACTEMENT.
+    //  2. l'historique stockait la vitesse calculée (now.sub(prev) mute now)
+    //     au lieu de la position → une main IMMOBILE générait des vitesses
+    //     fantômes énormes (±P/dt, P = position monde) alternées chaque frame.
     // Lissage : moyenne des 4 dernières frames (comme l'historique GT).
     for (const hand of ['left', 'right']) {
-      const now = this._handPos(hand, new THREE.Vector3())
+      const now = this._handPos(hand, new THREE.Vector3()).sub(this.rig.position) // repère du corps
       const prev = this._xrPosPrev[hand]
       if (this._xrPosPrev.has && dt > 0) {
-        const rel = now.sub(prev).divideScalar(dt).sub(this.vel) // relative au corps
+        const rel = new THREE.Vector3().subVectors(now, prev).divideScalar(dt) // vitesse main ↔ corps
         const hist = this._handVelHist[hand]
         hist.push(rel)
         if (hist.length > 4) hist.shift()
@@ -664,7 +684,7 @@ export class Player {
         avg.divideScalar(hist.length)
         this.handVelRel[hand].copy(avg)
       }
-      this._xrPosPrev[hand].copy(now)
+      this._xrPosPrev[hand].copy(now) // on stocke bien la POSITION (now n'est plus mutée)
       this._xrPosPrev.has = true
     }
   }
@@ -780,7 +800,12 @@ export class Player {
   // contact main ↔ surface (test sphère, sur une copie pour ne rien déplacer)
   _handContact(hand) {
     const test = this._handPos(hand, new THREE.Vector3())
-    return this.game.world.collideSphere(test, CFG.phys.contactRadius).hit
+    // +2 mm : _fixHandPenetration gare la main posée EXACTEMENT à
+    // surface + contactRadius ; sans cet epsilon, le test strict la
+    // déclare hors contact à chaque frame → la gravité s'accumule sous le
+    // corps pendant que la correction la remonte → la caméra tremble
+    // rapidement de haut en bas dès qu'on pose la main au sol.
+    return this.game.world.collideSphere(test, CFG.phys.contactRadius + 0.002).hit
   }
 
   // collision du corps (sphère sous la tête) : ressort + amortissement

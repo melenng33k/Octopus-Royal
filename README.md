@@ -34,7 +34,7 @@ nuage d'encre qui aveugle tes adversaires.
 | **Grand bassin** | Aquarium 72 × 46 × 22 m, décor densifié, brume adaptée |
 | **Rendu cinéma** | Tone mapping ACES, ombres douces, caustiques animées sur le sable, surface d'eau ondulante au-dessus du bassin (shader), rayons de lumière volumétriques, plancton en suspension, algues balancées par le GPU |
 | **Contour noir cartoon** | Liseré noir « rim fresnel » injecté dans les shaders des poulpes, poissons, tentacules, armes et props — aucune géométrie ajoutée, robuste en VR (plus d'écran noir ni de débris), coût GPU quasi nul |
-| **Vrais modèles 3D (CC0)** | 12 espèces de poissons Quaternius animés (nage normale/rapide) + requin, raie manta et dauphins d'ambiance ; **épave de galion** (Quaternius) penchée et semi-enfoncée dans le sable, coffre au trésor qui s'ouvre quand tu t'approches, barils, caisses, rochers et bouées Kenney — voir `src/assets/models/CREDITS.md` |
+| **Vrais modèles 3D (CC0 / CC BY 4.0)** | 12 espèces de poissons Quaternius animés (nage normale/rapide) + requin, raie manta et dauphins d'ambiance ; **épave de galion** (Quaternius) penchée et semi-enfoncée dans le sable, coffre au trésor qui s'ouvre quand tu t'approches, barils, caisses et bouées Kenney ; **récif corallien complet** (Polyfork, CC BY 4.0) : rochers incrustés, coraux (cerve, corniche, champignon, pilier, corne de cerf, doux, table, gorgone), éponges tube et baril, algues balancées par shader, bénitiers qui s'ouvrent, anémones, oursins, étoiles de mer et méduses translucides animées — voir `src/assets/models/CREDITS.md` |
 | **Nage satisfaisante** | Chaque poussée est juteuse : vibration des manettes au décollage, souffle d'eau, bulles ; le corps s'incline dans ton mouvement (jamais la caméra) |
 
 ## Jouer (Meta Quest)

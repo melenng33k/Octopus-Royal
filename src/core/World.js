@@ -1,16 +1,19 @@
 // ============================================================
 // World — l'aquarium : décor, collisions, raycast, ambiance
-// VERSION CINÉMA : caustiques animées sur le sable, surface d'eau
-// ondulante au-dessus du bassin, rayons de lumière doux, plancton
-// en suspension, ombres douces, tone mapping ACES, et les VRAIS
-// modèles 3D CC0 (épave, coffre animé, barils, caisses, rochers,
-// bouées) venus de Kenney / Quaternius.
+// VERSION RÉCIF : le décor organique est fait de VRAIS modèles
+// 3D low-poly du kit « Coral Reef » de Polyfork (CC BY 4.0) :
+// rochers incrustés, coraux (cerve, corniche, champignon, pilier,
+// corne de cerf, doux, table, gorgone), éponges, algues (herbier,
+// frondes, fouets de mer) balancées par shader, et bestioles
+// animées (bénitiers qui s'ouvrent, anémones, oursins, méduses).
+// Tout le statique est FUSIONNÉ en 1-2 draw calls pour la VR.
 // ============================================================
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js'
 import { CFG } from '../config.js'
-import { rand, randi, clamp } from '../utils.js'
+import { rand, clamp } from '../utils.js'
 import { addOutline, applyRimMaterial } from './Outline.js'
 
 const C = {
@@ -18,14 +21,6 @@ const C = {
   sandDark: 0xb8a276,
   glass: 0x9fe8ff,
   frame: 0x1e2c33,
-  rock: 0x8a94a0,
-  rockDark: 0x5f6b74,
-  weed: 0x2fa15c,
-  weed2: 0x35c06e,
-  coralA: 0xff8a70,
-  coralB: 0xffb56b,
-  coralC: 0xe86fa8,
-  pipe: 0x9fb0b8,
   water: 0x11a2c4,
   deep: 0x065b74,
   lamp: 0xfff2c4
@@ -64,19 +59,70 @@ const propUrl = (name) => {
   return key ? PROPS[key] : null
 }
 const propCache = new Map()
+// Les clips d'animation sont rangés HORS de la scène : un clone
+// SkeletonUtils sérialise userData en JSON et détruit les classes
+// des tracks (createInterpolant disparaît). On garde donc les vrais
+// AnimationClips dans ce registre, par nom de prop.
+const propAnims = new Map()
 function loadProp(name) {
   if (!propCache.has(name)) {
     const url = propUrl(name)
     propCache.set(name, url
       ? new Promise((res) => new GLTFLoader().load(url, (g) => {
-          // les animations sont portées par le gltf, pas la scène :
-          // on les accroche au root pour les retrouver après coup
-          g.scene.userData.animations = g.animations || []
+          propAnims.set(name, g.animations || [])
           res(g.scene)
         }, undefined, () => res(null)))
       : Promise.resolve(null))
   }
   return propCache.get(name)
+}
+const propAnimations = (name) => propAnims.get(name) || []
+
+// ---- bake des modèles du récif (Polyfork) ----
+
+// Extrait les géométries d'un GLB « à plat » dans son repère racine,
+// avec des attributs homogènes (position/normal/color) pour permettre
+// la fusion de dizaines d'instances en un seul mesh.
+function extractWorldGeos(root) {
+  root.updateMatrixWorld(true)
+  const list = []
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry) return
+    // ignore les helpers dégénérés éventuels
+    if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere()
+    const rr = o.geometry.boundingSphere ? o.geometry.boundingSphere.radius : 0
+    if (!isFinite(rr) || rr > 500) return
+    const g = o.geometry.clone().applyMatrix4(o.matrixWorld)
+    for (const name of Object.keys(g.attributes)) {
+      if (name !== 'position' && name !== 'normal' && name !== 'color') g.deleteAttribute(name)
+    }
+    if (!g.attributes.color) {
+      const n = g.attributes.position.count
+      const white = new Float32Array(n * 3).fill(1)
+      g.setAttribute('color', new THREE.BufferAttribute(white, 3))
+    }
+    g.morphAttributes = {}
+    list.push(g)
+  })
+  return list
+}
+
+// Matrice d'instance : pose le modèle (bbox connue) posé sur le sable,
+// centré sur (x, z), taille max = size, avec rotation/inclinaison/enfoncement.
+function placeMatrix(bbox, { x, z, size, rotY = 0, tiltX = 0, tiltZ = 0, sink = 0 }) {
+  const s = new THREE.Vector3()
+  bbox.getSize(s)
+  const k = size / (Math.max(s.x, s.y, s.z) || 1)
+  const c = new THREE.Vector3()
+  bbox.getCenter(c)
+  const M = new THREE.Matrix4().makeTranslation(x, -sink, z)
+  const R = new THREE.Matrix4().makeRotationY(rotY)
+  if (tiltX) R.multiply(new THREE.Matrix4().makeRotationX(tiltX))
+  if (tiltZ) R.multiply(new THREE.Matrix4().makeRotationZ(tiltZ))
+  M.multiply(R)
+    .multiply(new THREE.Matrix4().makeScale(k, k, k))
+    .multiply(new THREE.Matrix4().makeTranslation(-c.x, -bbox.min.y, -c.z))
+  return M
 }
 
 export class World {
@@ -101,8 +147,9 @@ export class World {
     this._buildOuterShell()
     this._buildFloor()
     this._buildGlass()
-    this._buildProps()
-    this._buildWeeds()
+    this._buildReef()
+    this._buildAlgae()
+    this._buildCritters()
     this._buildBubbles()
     this._buildPlankton()
     this._buildShafts()
@@ -296,134 +343,220 @@ export class World {
     this.group.add(frame)
   }
 
-  // ---------- Rochers, coraux, tuyaux (fusionnés pour la perf) ----------
-  _buildProps() {
-    const { w, d } = this
-    const rockGeos = [], coralGeos = [], pipeGeos = []
-    const paint = (geo, color, jitter = 0.06) => {
-      const c = new THREE.Color(color)
-      const n = geo.attributes.position.count
-      const arr = new Float32Array(n * 3)
-      for (let i = 0; i < n; i++) {
-        const j = 1 + rand(-jitter, jitter)
-        arr[i * 3] = c.r * j; arr[i * 3 + 1] = c.g * j; arr[i * 3 + 2] = c.b * j
-      }
-      geo.setAttribute('color', new THREE.BufferAttribute(arr, 3))
-      return geo
-    }
-
-    // Rochers procéduraux (collision sphérique) — complétés par les
-    // vrais modèles Kenney dans _buildModelProps()
-    const area = w * d
-    const nRocks = Math.round(9 * area / (40 * 24))
-    for (let i = 0; i < nRocks; i++) {
-      const r = rand(0.7, 1.9)
-      const x = rand(-w / 2 + 3, w / 2 - 3), z = rand(-d / 2 + 2.5, d / 2 - 3.5)
-      if (Math.abs(x) < 13 && z > d / 2 - 9) continue // commissariat dégagé
+  // ============================================================
+  // RÉCIF CORALLIEN — vrais modèles 3D du kit « Coral Reef »
+  // (Polyfork, CC BY 4.0). Fini les icosahèdres, cônes et tuyaux :
+  // rochers incrustés, coraux sculptés, éponges organiques.
+  // Toutes les instances statiques sont FUSIONNÉES en 1 seul mesh
+  // (vertex colors + un seul matériau) => 1 draw call pour tout.
+  // ============================================================
+  _scatter(n, mx = 4, mz = 3.5, minR = 0) {
+    const pts = []
+    let guard = n * 60
+    while (pts.length < n && guard-- > 0) {
+      const x = rand(-this.w / 2 + mx, this.w / 2 - mx)
+      const z = rand(-this.d / 2 + mz, this.d / 2 - mz)
+      if (Math.abs(x) < 13 && z > this.d / 2 - 9) continue // commissariat dégagé
       if (Math.abs(x + 22) < 9 && Math.abs(z + 12) < 7) continue // zone épave
-      const y = 0.15 + r * 0.45
-      const g = new THREE.IcosahedronGeometry(r, 1)
-      const p = g.attributes.position
-      for (let v = 0; v < p.count; v++) {
-        p.setXYZ(v, p.getX(v) * rand(0.85, 1.2), p.getY(v) * rand(0.6, 0.95), p.getZ(v) * rand(0.85, 1.2))
-      }
-      g.computeVertexNormals()
-      g.translate(x, y, z)
-      rockGeos.push(paint(g, i % 2 ? C.rock : C.rockDark))
-      this.colliders.push({ x, y, z, r: r * 0.82 })
+      if (Math.abs(x - 15.5) < 3.4 && Math.abs(z + 7.5) < 3.4) continue // coffre dégagé
+      if (minR > 0 && pts.some(p => (p[0] - x) ** 2 + (p[1] - z) ** 2 < minR * minR)) continue
+      pts.push([x, z])
     }
-
-    // Coraux (déco, sans collision)
-    const nCorals = Math.round(16 * area / (40 * 24))
-    for (let i = 0; i < nCorals; i++) {
-      const x = rand(-w / 2 + 2.5, w / 2 - 2.5), z = rand(-d / 2 + 2, d / 2 - 3.5)
-      if (Math.abs(x) < 13 && z > d / 2 - 9) continue
-      if (Math.abs(x + 22) < 9 && Math.abs(z + 12) < 7) continue
-      const col = [C.coralA, C.coralB, C.coralC][i % 3]
-      const n = randi(3, 5)
-      for (let k = 0; k < n; k++) {
-        const hh = rand(0.5, 1.6)
-        const g = new THREE.ConeGeometry(rand(0.08, 0.17), hh, 5)
-        g.translate(x + rand(-0.5, 0.5), hh / 2 + 0.15, z + rand(-0.5, 0.5))
-        coralGeos.push(paint(g, col))
-      }
-    }
-
-    // Tuyaux PVC (collision)
-    const nPipes = Math.max(3, Math.round(3 * area / (40 * 24)))
-    for (let i = 0; i < nPipes; i++) {
-      const len = rand(2.5, 4.5), r = rand(0.45, 0.6)
-      const x = rand(-w / 2 + 4, w / 2 - 4), z = rand(-d / 2 + 2.5, 0)
-      const horiz = i % 2 === 0
-      const g = new THREE.CylinderGeometry(r, r, len, 12, 1, true)
-      if (horiz) { g.rotateZ(Math.PI / 2) } else { g.rotateX(Math.PI / 2) }
-      g.translate(x, r + 0.25, z)
-      pipeGeos.push(paint(g, C.pipe, 0.03))
-      const n = horiz ? { x: 0, z: 1 } : { x: 1, z: 0 }
-      for (const s of [-0.35, 0, 0.35]) {
-        this.colliders.push(horiz
-          ? { x: x + s * len, y: r + 0.25, z, r: r * 0.95 }
-          : { x, y: r + 0.25, z: z + s * len, r: r * 0.95 })
-      }
-    }
-
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.02 })
-    const rockMesh = new THREE.Mesh(mergeGeometries(rockGeos), mat)
-    const coralMat = mat.clone()
-    applyRimMaterial(coralMat, { str: 0.8 })
-    const coralMesh = new THREE.Mesh(mergeGeometries(coralGeos), coralMat)
-    const pipeMesh = new THREE.Mesh(mergeGeometries(pipeGeos), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.35, side: THREE.DoubleSide }))
-    rockMesh.castShadow = rockMesh.receiveShadow = true
-    addOutline(rockMesh)
-    addOutline(pipeMesh)
-    this.group.add(rockMesh, coralMesh, pipeMesh)
+    return pts
   }
 
-  // ---------- Algues : fusionnées en 1 draw call, balancement GPU ----------
-  _buildWeeds() {
-    const { w, d } = this
-    const mat = new THREE.MeshStandardMaterial({ color: 0x2fa15c, roughness: 0.9, side: THREE.DoubleSide })
-    // balancement dans le shader (pas d'anim CPU) : uv.y = hauteur sur la lame
+  _buildReef() {
+    // col = rayon de collision (x taille) : les rochers et grosses
+    // éponges deviennent des surfaces de poussée Gorilla Tag.
+    const RIGID = [
+      // --- matrices rocheuses (collision) ---
+      { id: 'pf_small-reef-rock-99062d', n: 12, size: [1.2, 2.4], col: 0.42, minR: 2.2, sink: 0.1 },
+      { id: 'pf_encrusted-reef-boulder-972d95', n: 7, size: [2.0, 3.2], col: 0.4, minR: 3.4, sink: 0.12 },
+      { id: 'pf_reef-rubble-terrain-blob-df5888', n: 5, size: [4.5, 7.0], col: 0.34, minR: 6, sink: 0.2, margin: [8, 6] },
+      { id: 'pf_coral-bommie-772b22', n: 4, size: [3.0, 4.4], col: 0.4, minR: 4.2, sink: 0.12 },
+      { id: 'pf_coral-pinnacle-0d9756', n: 3, size: [4.0, 5.6], col: 0.24, minR: 4.5, sink: 0.15, spire: true },
+      // --- coraux (décor, sans collision) ---
+      { id: 'pf_brain-coral-head-7db21a', n: 9, size: [0.8, 1.6], minR: 1.8, sink: 0.05 },
+      { id: 'pf_lettuce-coral-e16e43', n: 7, size: [0.8, 1.5], minR: 1.7, sink: 0.04 },
+      { id: 'pf_mushroom-coral-a2906e', n: 10, size: [0.5, 0.95], minR: 1.2, sink: 0.03 },
+      { id: 'pf_pillar-coral-b6deba', n: 6, size: [1.2, 2.2], minR: 1.9, sink: 0.06 },
+      { id: 'pf_staghorn-coral-422d23', n: 8, size: [0.9, 1.8], minR: 1.8, sink: 0.05 },
+      { id: 'pf_soft-coral-tree-450af0', n: 7, size: [0.8, 1.6], minR: 1.7, sink: 0.05 },
+      { id: 'pf_table-coral-193fa6', n: 6, size: [1.2, 2.4], minR: 2.0, sink: 0.05 },
+      { id: 'pf_sea-fan-bafd49', n: 7, size: [0.8, 1.5], minR: 1.7, sink: 0.04, tiltZ: 0.14 },
+      // --- éponges (elles remplacent les vieux tuyaux PVC) ---
+      { id: 'pf_tube-sponge-df576b', n: 9, size: [1.0, 2.0], col: 0.36, minR: 2.0, sink: 0.06 },
+      { id: 'pf_barrel-sponge-ab460c', n: 6, size: [0.9, 1.8], col: 0.38, minR: 2.0, sink: 0.06 }
+    ]
+    const parts = []
+    let pending = RIGID.length
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 })
+    for (const def of RIGID) {
+      loadProp(def.id).then(src => {
+        if (!src) { if (--pending === 0) this._commitReef(parts, mat); return }
+        const geos = extractWorldGeos(src)
+        const bbox = new THREE.Box3().setFromObject(src)
+        const [mx, mz] = def.margin || [4, 3.5]
+        for (const [x, z] of this._scatter(def.n, mx, mz, def.minR)) {
+          const size = rand(def.size[0], def.size[1])
+          const sink = def.sink * rand(0.7, 1.3)
+          const M = placeMatrix(bbox, { x, z, size, rotY: rand(0, Math.PI * 2), tiltZ: def.tiltZ ? rand(-def.tiltZ, def.tiltZ) : 0, sink })
+          for (const g0 of geos) parts.push(g0.clone().applyMatrix4(M))
+          if (def.col) {
+            const r = size * def.col
+            this.colliders.push({ x, y: Math.max(0.3, r * 0.85 - sink), z, r })
+            if (def.spire) this.colliders.push({ x, y: size * 0.52, z, r: r * 0.62 })
+          }
+        }
+        if (--pending === 0) this._commitReef(parts, mat)
+      })
+    }
+  }
+
+  _commitReef(parts, mat) {
+    if (!parts.length) return
+    // sécurité : tout indexé ou tout non-indexé (jamais les deux)
+    const src = parts.every(p => p.index) ? parts : parts.map(p => (p.index ? p.toNonIndexed() : p))
+    const merged = mergeGeometries(src)
+    if (!merged) return
+    const mesh = new THREE.Mesh(merged, mat)
+    mesh.castShadow = mesh.receiveShadow = true
+    mesh.frustumCulled = false
+    applyRimMaterial(mat, { str: 0.7 })
+    this.group.add(mesh)
+  }
+
+  // ============================================================
+  // ALGUES — herbiers, frondes et fouets de mer (Polyfork) fusionnés
+  // en 1 mesh. Balancement GPU par shader : aSway.x = amplitude du
+  // modèle, aSway.y = hauteur normalisée sur la plante (0 racine,
+  // 1 sommet). Les positions étant cuites en monde, chaque plant a
+  // naturellement sa propre phase de balancement.
+  // ============================================================
+  _buildAlgae() {
+    const ALGAE = [
+      { id: 'pf_seagrass-tuft-862cc5', n: 26, size: [0.9, 1.8], amp: 1.0, minR: 1.4 },
+      { id: 'pf_broad-algae-frond-88a644', n: 16, size: [1.2, 2.2], amp: 0.45, minR: 1.6 },
+      { id: 'pf_sea-whip-e56668', n: 12, size: [1.6, 2.8], amp: 0.8, minR: 1.8 }
+    ]
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0, side: THREE.DoubleSide })
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = { value: 0 }
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nuniform float uTime;')
+        .replace('#include <common>', '#include <common>\nuniform float uTime;\nattribute vec2 aSway;')
         .replace('#include <begin_vertex>', `#include <begin_vertex>
-          float sway = sin(uTime * 1.3 + position.x * 0.6 + position.z * 0.45);
-          transformed.x += sway * 0.28 * uv.y * uv.y;
-          transformed.z += cos(uTime * 0.9 + position.x * 0.4) * 0.16 * uv.y * uv.y;`)
-      this.weedShader = shader
+          float swA = aSway.x * aSway.y * aSway.y;
+          transformed.x += sin(uTime * 1.25 + position.x * 0.55 + position.z * 0.4) * 0.34 * swA;
+          transformed.z += cos(uTime * 0.85 + position.x * 0.35 + position.z * 0.5) * 0.2 * swA;`)
+      this.algaeShader = shader
     }
     // liseré noir cartoon : injecté APRÈS le balancement pour chaîner
     // les deux patchs shader (applyRimMaterial enveloppe onBeforeCompile)
-    applyRimMaterial(mat, { str: 0.85 })
-    const geos = []
-    for (let i = 0; i < 22; i++) {
-      const x = rand(-w / 2 + 2, w / 2 - 2), z = rand(-d / 2 + 1.5, d / 2 - 3)
-      if (Math.abs(x) < 13 && z > d / 2 - 8) continue
-      if (Math.abs(x + 22) < 9 && Math.abs(z + 12) < 7) continue
-      const n = randi(3, 5)
-      const clusterRot = rand(0, Math.PI * 2)
-      for (let k = 0; k < n; k++) {
-        const hh = rand(1.6, 3.6)
-        const g = new THREE.PlaneGeometry(rand(0.24, 0.42), hh, 1, 5)
-        g.translate(0, hh / 2, 0)
-        const p = g.attributes.position
-        for (let v = 0; v < p.count; v++) {
-          const y = p.getY(v)
-          p.setX(v, p.getX(v) + Math.sin(y * 1.2) * 0.2 * (y / hh))
+    applyRimMaterial(mat, { str: 0.8 })
+    const parts = []
+    let pending = ALGAE.length
+    for (const def of ALGAE) {
+      loadProp(def.id).then(src => {
+        if (!src) { if (--pending === 0) this._commitAlgae(parts, mat); return }
+        const geos = extractWorldGeos(src)
+        const bbox = new THREE.Box3().setFromObject(src)
+        for (const [x, z] of this._scatter(def.n, 4, 3, def.minR)) {
+          const size = rand(def.size[0], def.size[1])
+          const M = placeMatrix(bbox, { x, z, size, rotY: rand(0, Math.PI * 2), sink: 0.04 })
+          for (const g0 of geos) {
+            const g = g0.clone().applyMatrix4(M)
+            // aSway : amplitude du modèle + hauteur normalisée du sommet
+            g.computeBoundingBox()
+            const hh = Math.max(1e-4, g.boundingBox.max.y - g.boundingBox.min.y)
+            const pos = g.attributes.position
+            const sw = new Float32Array(pos.count * 2)
+            for (let i = 0; i < pos.count; i++) {
+              const h = clamp((pos.getY(i) - g.boundingBox.min.y) / hh, 0, 1)
+              sw[i * 2] = def.amp
+              sw[i * 2 + 1] = h
+            }
+            g.setAttribute('aSway', new THREE.BufferAttribute(sw, 2))
+            parts.push(g)
+          }
         }
-        // pose monde : cluster + offset local
-        g.rotateY(clusterRot + rand(-0.8, 0.8))
-        g.translate(x + rand(-0.5, 0.5), 0.1, z + rand(-0.4, 0.4))
-        geos.push(g)
-      }
+        if (--pending === 0) this._commitAlgae(parts, mat)
+      })
     }
-    const merged = mergeGeometries(geos)
-    merged.computeVertexNormals()
-    const weeds = new THREE.Mesh(merged, mat)
-    weeds.frustumCulled = false
-    this.group.add(weeds)
+  }
+
+  _commitAlgae(parts, mat) {
+    if (!parts.length) return
+    const src = parts.every(p => p.index) ? parts : parts.map(p => (p.index ? p.toNonIndexed() : p))
+    const merged = mergeGeometries(src)
+    if (!merged) return
+    const mesh = new THREE.Mesh(merged, mat)
+    mesh.frustumCulled = false
+    this.group.add(mesh)
+  }
+
+  // ============================================================
+  // BESTIOLES ANIMÉES du récif : bénitiers (s'ouvrent quand on
+  // approche), anémones, oursins et étoiles de mer posées + méduses
+  // translucides qui dérivent en pleine eau. Clones SkeletonUtils
+  // (meshes skinnés) + AnimationMixer, mis à jour dans update().
+  // ============================================================
+  _buildCritters() {
+    this.critters = []
+    this.jellies = []
+    const CRITTERS = [
+      { id: 'pf_giant-clam-6408ba', n: 2, size: [1.0, 1.4], react: true },
+      { id: 'pf_sea-anemone-9c2a94', n: 3, size: [0.9, 1.4] },
+      { id: 'pf_sea-urchin-b599d4', n: 4, size: [1.3, 1.9] },
+      { id: 'pf_starfish-772749', n: 7, size: [0.42, 0.7] }
+    ]
+    for (const def of CRITTERS) {
+      loadProp(def.id).then(src => {
+        if (!src) return
+        for (const [x, z] of this._scatter(def.n, 3.5, 3, 1.2)) {
+          const inst = cloneSkinned(src)
+          const size = rand(def.size[0], def.size[1])
+          const holder = this._placeModel(inst, {
+            pos: [x, 0.05, z], rotY: rand(0, Math.PI * 2), size,
+            rim: { str: 0.55 }
+          })
+          const mixer = new THREE.AnimationMixer(inst)
+          const anims = propAnimations(def.id)
+          if (anims.length) {
+            const idle = anims.find(a => /idle/i.test(a.name)) || anims[0]
+            mixer.clipAction(idle).play()
+          }
+          this.critters.push({
+            mixer, holder, clips: anims, react: def.react,
+            state: 'idle', cooldown: rand(0, 2),
+            pos: new THREE.Vector3(x, 0.6, z)
+          })
+        }
+      })
+    }
+    // méduses : translucides, dérive lente en pleine eau (pas d'ombre,
+    // pas de liseré : le rim ternirait la transparence)
+    loadProp('pf_moon-jellyfish-0fa43c').then(src => {
+      if (!src) return
+      for (let i = 0; i < 3; i++) {
+        const inst = cloneSkinned(src)
+        const holder = this._placeModel(inst, {
+          pos: [rand(-this.w / 2 + 6, this.w / 2 - 6), rand(4, this.h - 4), rand(-this.d / 2 + 5, this.d / 2 - 5)],
+          size: rand(1.2, 1.9), shadow: false
+        })
+        const mixer = new THREE.AnimationMixer(inst)
+        const anims = propAnimations('pf_moon-jellyfish-0fa43c')
+        const swim = anims.find(a => /swim/i.test(a.name) && !/fast/i.test(a.name))
+        if (swim) mixer.clipAction(swim).play()
+        this.jellies.push({
+          holder, mixer,
+          cx: holder.position.x, cz: holder.position.z,
+          baseY: holder.position.y,
+          phase: rand(0, Math.PI * 2),
+          speed: rand(0.05, 0.12),
+          radius: rand(2.5, 6)
+        })
+      }
+    })
   }
 
   // ---------- Bulles montantes ----------
@@ -685,7 +818,7 @@ export class World {
       })
       const mixer = new THREE.AnimationMixer(s)
       const clips = {}
-      const anims = s.userData.animations || []
+      const anims = propAnimations('k_pirate_chest')
       for (const c of anims) {
         const nm = c.name.toLowerCase()
         if (nm.includes('open') && nm.includes('close')) clips.loop = c
@@ -702,11 +835,14 @@ export class World {
     }).catch(() => {})
 
     // --- BARILS & CAISSES (épave + autour du bassin) ---
+    // clone(true) obligatoire : loadProp met la MÊME scène en cache, et
+    // Object3D.add() détache l'enfant de son parent précédent (sinon les
+    // 2e/3e placements restaient des holders vides).
     const barrels = [[-18.5, -8.2, 0.7], [17.5, 6.5, -0.4], [-7.5, 14, 1.9]]
     for (const [x, z, ry] of barrels) {
       loadProp('k_pirate_barrel').then(s => {
         if (!s) return
-        this._placeModel(s, {
+        this._placeModel(s.clone(true), {
           pos: [x, 0.15, z], rotY: ry, size: 1.05,
           colliders: [[x, 0.55, z, 0.55]], rim: true
         })
@@ -716,32 +852,16 @@ export class World {
     for (const [x, z, ry] of crates) {
       loadProp('k_pirate_crate').then(s => {
         if (!s) return
-        this._placeModel(s, {
+        this._placeModel(s.clone(true), {
           pos: [x, 0.15, z], rotY: ry, size: 1.0,
           colliders: [[x, 0.5, z, 0.6]], rim: true
         })
       })
     }
 
-    // --- GROS ROCHERS SCULPTÉS (Kenney) : 6 instances ---
-    const rockDefs = [
-      ['k_pirate_rocks-a', -10, -16, 3.4, 0.6],
-      ['k_pirate_rocks-b', 24, -12, 3.0, 2.1],
-      ['k_pirate_rocks-c', -28, 8, 2.7, 4.0],
-      ['k_pirate_rocks-a', 8, 12, 2.6, 1.1],
-      ['k_pirate_rocks-b', -4, -6, 2.2, 3.3],
-      ['k_pirate_rocks-c', 30, 10, 2.9, 5.2]
-    ]
-    for (const [name, x, z, size, ry] of rockDefs) {
-      loadProp(name).then(s => {
-        if (!s) return
-        const inst = s.clone(true)
-        this._placeModel(inst, {
-          pos: [x, 0.15, z], rotY: ry, size,
-          colliders: [[x, 0.8, z, size * 0.42]], rim: true
-        })
-      })
-    }
+    // (Les anciens « rochers sculptés » Kenney k_pirate_rocks-a/b/c sont
+    // RETIRÉS : leur géométrie était cassée (tas de triangles bleus) —
+    // ce sont les vrais rochers du récif Polyfork qui les remplacent.)
 
     // --- BOUÉES flottantes à la surface ---
     this.buoys = []
@@ -860,7 +980,42 @@ export class World {
       pp.needsUpdate = true
     }
     // algues : le balancement est GPU (uTime), plus rien à mettre à jour
-    if (this.weedShader) this.weedShader.uniforms.uTime.value = time
+    if (this.algaeShader) this.algaeShader.uniforms.uTime.value = time
+    // bestioles du récif : mixers + bénitiers qui s'ouvrent quand on approche
+    if (this.critters) {
+      for (const c of this.critters) {
+        c.mixer.update(dt)
+        c.cooldown = Math.max(0, c.cooldown - dt)
+        if (!c.react) continue
+        const near = playerPos ? playerPos.distanceTo(c.pos) < 3.2 : false
+        if (near && c.state === 'idle' && c.cooldown <= 0) {
+          c.state = 'react'
+          c.cooldown = 3.6
+          const clip = c.clips.find(a => /react/i.test(a.name))
+          if (clip) {
+            const a = c.mixer.clipAction(clip)
+            a.reset(); a.setLoop(THREE.LoopOnce); a.clampWhenFinished = true; a.play()
+          }
+        } else if (!near && c.state === 'react' && c.cooldown <= 0) {
+          c.state = 'idle'
+          c.cooldown = 0.8
+          const clip = c.clips.find(a => /idle/i.test(a.name))
+          if (clip) { const a = c.mixer.clipAction(clip); a.reset(); a.play() }
+        }
+      }
+    }
+    // méduses : dérive circulaire lente + pulsation verticale
+    if (this.jellies) {
+      for (const j of this.jellies) {
+        j.mixer.update(dt)
+        j.phase += dt * j.speed
+        const x = j.cx + Math.cos(j.phase) * j.radius
+        const z = j.cz + Math.sin(j.phase * 0.83) * j.radius * 0.7
+        j.holder.position.set(x, j.baseY + Math.sin(time * 0.55 + j.phase) * 0.9, z)
+        j.holder.rotation.z = Math.sin(time * 0.7 + j.phase) * 0.07
+        j.holder.rotation.x = Math.cos(time * 0.6 + j.phase) * 0.06
+      }
+    }
     // rayons
     if (this.shafts) {
       for (const s of this.shafts) {
