@@ -34,6 +34,8 @@ export class NpcBounty {
       this.pos.set(rand(b0.xmin + 4, b0.xmax - 4), rand(2, b0.topY - 3), rand(b0.zmin + 4, b0.zmax - 6))
       tries++
     } while (this.pos.distanceTo(spawn) < 10 && tries < 30)
+    // jamais d'apparition sous le relief (dunes, buttes)
+    this.pos.y = Math.max(this.pos.y, this.world.terrainHeight(this.pos.x, this.pos.z) + 1.6)
     this.vel = new THREE.Vector3()
     this.yaw = rand(0, Math.PI * 2)
     this.target = new THREE.Vector3()
@@ -114,6 +116,8 @@ export class NpcBounty {
       if (this.stateTimer <= 0) {
         const b = this.world.bounds
         this.target.set(rand(b.xmin + 2, b.xmax - 2), rand(1.5, b.topY - 1.5), rand(b.zmin + 2, b.zmax - 2))
+        // cible au-dessus du relief
+        this.target.y = Math.max(this.target.y, this.world.terrainHeight(this.target.x, this.target.z) + 1.4)
         this.stateTimer = rand(2.5, 5)
       }
       desired.copy(this.target).sub(this.pos)

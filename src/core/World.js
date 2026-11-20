@@ -1,12 +1,13 @@
 // ============================================================
 // World — l'aquarium : décor, collisions, raycast, ambiance
-// VERSION RÉCIF : le décor organique est fait de VRAIS modèles
-// 3D low-poly du kit « Coral Reef » de Polyfork (CC BY 4.0) :
-// rochers incrustés, coraux (cerve, corniche, champignon, pilier,
-// corne de cerf, doux, table, gorgone), éponges, algues (herbier,
-// frondes, fouets de mer) balancées par shader, et bestioles
-// animées (bénitiers qui s'ouvrent, anémones, oursins, méduses).
-// Tout le statique est FUSIONNÉ en 1-2 draw calls pour la VR.
+// VERSION RELIEF : le fond marin est un vrai champ de hauteur
+// (dunes, buttes, vasques) partagé par le mesh visuel, les
+// collisions sphère, les raycasts et le posé des props — tout
+// concorde. Deux grottes bâties en blobs de rochers procéduraux
+// (grotte à cristaux + arche traversable) sont des surfaces de
+// poussée Gorilla Tag à part entière. Le décor organique reste
+// fait de VRAIS modèles 3D du kit « Coral Reef » de Polyfork
+// (CC BY 4.0), posés SUR le relief, fusionnés en 1-2 draw calls.
 // ============================================================
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
@@ -109,13 +110,14 @@ function extractWorldGeos(root) {
 
 // Matrice d'instance : pose le modèle (bbox connue) posé sur le sable,
 // centré sur (x, z), taille max = size, avec rotation/inclinaison/enfoncement.
-function placeMatrix(bbox, { x, z, size, rotY = 0, tiltX = 0, tiltZ = 0, sink = 0 }) {
+// baseY = hauteur du terrain à (x, z) : les props suivent le relief.
+function placeMatrix(bbox, { x, z, size, baseY = 0, rotY = 0, tiltX = 0, tiltZ = 0, sink = 0 }) {
   const s = new THREE.Vector3()
   bbox.getSize(s)
   const k = size / (Math.max(s.x, s.y, s.z) || 1)
   const c = new THREE.Vector3()
   bbox.getCenter(c)
-  const M = new THREE.Matrix4().makeTranslation(x, -sink, z)
+  const M = new THREE.Matrix4().makeTranslation(x, baseY - sink, z)
   const R = new THREE.Matrix4().makeRotationY(rotY)
   if (tiltX) R.multiply(new THREE.Matrix4().makeRotationX(tiltX))
   if (tiltZ) R.multiply(new THREE.Matrix4().makeRotationZ(tiltZ))
@@ -146,6 +148,7 @@ export class World {
     this._buildLights()
     this._buildOuterShell()
     this._buildFloor()
+    this._buildTerrainRocks()
     this._buildGlass()
     this._buildReef()
     this._buildAlgae()
@@ -241,21 +244,82 @@ export class World {
     this.group.add(new THREE.Mesh(mergeGeometries(strips), stripMat))
   }
 
+  // ============================================================
+  // RELIEF DU FOND — champ de hauteur analytique. Dunes, grosses
+  // buttes, vasques. La MÊME fonction sert au mesh visuel, aux
+  // collisions, aux raycasts et au posé des props : zéro décalage.
+  // ============================================================
+  _smooth01(t) { t = clamp(t, 0, 1); return t * t * (3 - 2 * t) }
+
+  // bosse lisse : 1 au centre, tangente horizontale au bord (r en m)
+  _bump(dx, dz, r) {
+    const d = Math.sqrt(dx * dx + dz * dz) / r
+    if (d >= 1) return 0
+    const t = 1 - d * d
+    return t * t
+  }
+
+  // masque d'aplanissement : 0 = zone gardée à plat (spawn, épave,
+  // coffre, grottes), 1 = relief normal, transition douce entre les deux
+  _flat(cx, cz, rx, rz, x, z) {
+    const d = Math.sqrt(((x - cx) / rx) ** 2 + ((z - cz) / rz) ** 2)
+    return this._smooth01((d - 0.55) / 0.75)
+  }
+
+  terrainHeight(x, z) {
+    // dunes ondulantes (4 octaves douces, pentes VR-comfortables)
+    let y =
+      1.05 * Math.sin(x * 0.11 + 1.2) * Math.cos(z * 0.14 - 0.8) +
+      0.65 * Math.sin(x * 0.23 - 2.0) * Math.cos(z * 0.27 + 1.1) +
+      0.32 * Math.sin(x * 0.47 + z * 0.41 + 0.7) +
+      0.14 * Math.sin(x * 0.93) * Math.cos(z * 0.81 - 1.9)
+    // bosses marquées : grande butte est, crête ouest, mamelon central
+    y += 2.9 * this._bump(x - 24, z - 2, 11.5)
+    y += 2.5 * this._bump(x + 24, z - 8, 9)
+    y += 2.0 * this._bump(x - 2, z + 4, 8)
+    // vasques (creux sableux)
+    y -= 1.5 * this._bump(x - 6, z + 16, 7)
+    y -= 1.2 * this._bump(x + 18, z - 14, 6.5)
+    // zones à garder plates : commissariat + spawn, épave, coffre, grottes
+    let m = 1
+    m = Math.min(m, this._flat(0.5, 17.5, 15.5, 7.5, x, z))
+    m = Math.min(m, this._flat(-22, -12, 10.5, 8.5, x, z))
+    m = Math.min(m, this._flat(15.5, -7.5, 4.5, 4.5, x, z))
+    m = Math.min(m, this._flat(25, 13, 8, 8, x, z))
+    m = Math.min(m, this._flat(-6, -15, 7.5, 7.5, x, z))
+    y *= m
+    // fond de la grotte à cristaux légèrement creusé (on est DEDANS)
+    const dg = Math.sqrt((x - 25) ** 2 + (z - 13) ** 2)
+    if (dg < 5.8) y -= 0.55 * (1 - this._smooth01((dg - 3.4) / 2.4))
+    return y
+  }
+
   // ---------- Sable bosselé + CAUSTIQUES animées en shader ----------
   _buildFloor() {
     const { w, d } = this
-    const geo = new THREE.PlaneGeometry(w, d, 76, 48)
+    const geo = new THREE.PlaneGeometry(w, d, 132, 84)
     geo.rotateX(-Math.PI / 2)
     const pos = geo.attributes.position
     const colors = new Float32Array(pos.count * 3)
     const base = new THREE.Color(C.sand)
     const dark = new THREE.Color(C.sandDark)
+    const rockTint = new THREE.Color(0x9a8c72)
+    const algaeTint = new THREE.Color(0x86a878)
+    const tmp = new THREE.Color()
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i), z = pos.getZ(i)
-      const y = 0.17 * Math.sin(x * 0.42) * Math.cos(z * 0.56) + 0.07 * Math.sin(x * 1.8 + z * 1.4)
+      const y = this.terrainHeight(x, z)
       pos.setY(i, y)
-      const t = clamp((y + 0.22) / 0.45, 0, 1)
-      const c = dark.clone().lerp(base, t)
+      // pente locale : plus raide -> tire vers le rocheux
+      const e = 1.1
+      const gx = (this.terrainHeight(x + e, z) - this.terrainHeight(x - e, z)) / (2 * e)
+      const gz = (this.terrainHeight(x, z + e) - this.terrainHeight(x, z - e)) / (2 * e)
+      const slope = Math.min(1, Math.sqrt(gx * gx + gz * gz) * 0.75)
+      const t = clamp((y + 2.4) / 7.0, 0, 1)
+      const c = tmp.copy(dark).lerp(base, t)
+      c.lerp(rockTint, slope * 0.6)
+      // vasques : léger voile d'algue dans les creux
+      if (y < -0.5) c.lerp(algaeTint, Math.min(0.4, (-y - 0.5) * 0.35))
       // variations subtiles de teinte (zones plus chaudes / plus vertes)
       const hueShift = 0.02 * Math.sin(x * 0.11 + z * 0.13)
       c.offsetHSL(hueShift, 0.02, 0.02 * Math.cos(x * 0.07 - z * 0.09))
@@ -306,6 +370,159 @@ export class World {
     const floor = new THREE.Mesh(geo, mat)
     floor.receiveShadow = true
     this.group.add(floor)
+  }
+
+  // ============================================================
+  // RELIEF BÂTI — blobs de rochers procéduraux + sphères de
+  // collision : GROTTE À CRISTAUX (dôme habitable à 2 entrées,
+  // fond creusé, cristaux lumineux), ARCHE DE PIERRE traversable,
+  // SURPLOMB sur la dune ouest. Tous ces rochers sont des
+  // surfaces de poussée Gorilla Tag : on grimpe, on traverse, on
+  // se cache dedans.
+  // ============================================================
+  _rockBlobGeo(r, seed) {
+    const g = new THREE.IcosahedronGeometry(1, 2)
+    g.deleteAttribute('uv')
+    const pos = g.attributes.position
+    const colors = new Float32Array(pos.count * 3)
+    const seen = new Map()
+    const cLow = new THREE.Color(0x6a5c45)
+    const cHigh = new THREE.Color(0xa99b7a)
+    const cAlgae = new THREE.Color(0x74885c)
+    const tmp = new THREE.Color()
+    const h1 = (n) => { const s = Math.sin(n * 127.1 + seed * 311.7) * 43758.5453; return s - Math.floor(s) }
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i)
+      // même déplacement pour les sommets confondus (géométrie non indexée)
+      const key = x.toFixed(3) + '|' + y.toFixed(3) + '|' + z.toFixed(3)
+      let d = seen.get(key)
+      if (d === undefined) {
+        d = 0.9 + 0.13 * h1(x * 2.7 + y * 5.3 + z * 3.9) + 0.09 * h1(x * 7.9 - z * 6.3 + y * 1.7)
+        seen.set(key, d)
+      }
+      pos.setXYZ(i, x * d, y * d, z * d)
+      const t = clamp((y * d + 1) / 2, 0, 1)
+      tmp.copy(cLow).lerp(cHigh, t)
+      if (t > 0.58) tmp.lerp(cAlgae, (t - 0.58) * 1.1 * (0.35 + 0.65 * h1(z * 3.1 + y * 2.2)))
+      colors[i * 3] = tmp.r; colors[i * 3 + 1] = tmp.g; colors[i * 3 + 2] = tmp.b
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    g.scale(r, r * 0.84, r) // posé : un peu plus large que haut
+    g.computeVertexNormals()
+    return g
+  }
+
+  _addBoulder(parts, colliders, x, y, z, r, seed) {
+    const g = this._rockBlobGeo(r, seed)
+    g.translate(x, y, z)
+    parts.push(g)
+    colliders.push({ x, y, z, r: r * 0.98 })
+  }
+
+  _buildTerrainRocks() {
+    const parts = [], cols = []
+    const cx1 = 25, cz1 = 13 // grotte à cristaux (pad aplani)
+    const cx2 = -6, cz2 = -15 // arche de pierre (pad aplani)
+    let s = 7
+
+    // ---------- GROTTE À CRISTAUX : dôme habitable, 2 entrées ----------
+    const R = 5.2
+    const gaps = [[Math.PI - 0.42, Math.PI + 0.42], [-Math.PI / 2 - 0.42, -Math.PI / 2 + 0.42]]
+    const inGap = (a) => gaps.some(([lo, hi]) => a >= lo && a <= hi)
+    // couronne basse (jours des entrées : ouest et nord)
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2 + 0.09
+      if (inGap(a)) continue
+      this._addBoulder(parts, cols, cx1 + Math.cos(a) * R, 1.05 + rand(-0.15, 0.3), cz1 + Math.sin(a) * R, rand(1.7, 2.15), s++)
+    }
+    // couronne haute (décalée d'un demi-pas pour casser l'alignement)
+    for (let i = 0; i < 10; i++) {
+      const a = ((i + 0.5) / 10) * Math.PI * 2 + 0.22
+      if (inGap(a)) continue
+      this._addBoulder(parts, cols, cx1 + Math.cos(a) * (R - 0.8), 2.85 + rand(-0.2, 0.35), cz1 + Math.sin(a) * (R - 0.8), rand(1.55, 1.95), s++)
+    }
+    // linteaux au-dessus des deux entrées (ouverture ~2,4 m de haut)
+    this._addBoulder(parts, cols, cx1 - (R - 1.1), 3.7, cz1, 1.85, s++)
+    this._addBoulder(parts, cols, cx1, 3.55, cz1 - (R - 1.1), 1.8, s++)
+    // toit : dalles en couronne + claveau central
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + 0.26
+      this._addBoulder(parts, cols, cx1 + Math.cos(a) * 2.5, 5.1 + rand(0, 0.35), cz1 + Math.sin(a) * 2.5, rand(1.95, 2.3), s++)
+    }
+    this._addBoulder(parts, cols, cx1, 6.0, cz1, 2.05, s++)
+    // rocher « mobilier » à l'intérieur
+    this._addBoulder(parts, cols, cx1 - 1.3, -0.15, cz1 + 1.0, 0.85, s++)
+
+    // ---------- ARCHE DE PIERRE : tunnel traversable ----------
+    for (const rx of [cx2 - 2.2, cx2 + 2.2]) {
+      for (let i = 0; i < 9; i++) {
+        const a = (i / 9) * Math.PI * 2 + (rx < cx2 ? 0.2 : 0.55)
+        this._addBoulder(parts, cols, rx, 2.6 + Math.sin(a) * 3.3, cz2 + Math.cos(a) * 3.3, rand(1.35, 1.7), s++)
+      }
+    }
+    this._addBoulder(parts, cols, cx2, 5.75, cz2, 1.55, s++) // clé de voûte
+    // assises naturelles au pied des piles
+    this._addBoulder(parts, cols, cx2 - 4.8, 0.55, cz2 + 1.3, 1.35, s++)
+    this._addBoulder(parts, cols, cx2 + 4.8, 0.5, cz2 - 1.0, 1.45, s++)
+    this._addBoulder(parts, cols, cx2 - 3.4, 0.3, cz2 - 2.6, 1.1, s++)
+    this._addBoulder(parts, cols, cx2 + 3.2, 0.35, cz2 + 2.5, 1.05, s++)
+
+    // ---------- SURPLOMB sur la dune ouest (petit abri ombragé) ----------
+    {
+      const t1 = this.terrainHeight(-25.6, 7.0)
+      const t2 = this.terrainHeight(-22.8, 9.2)
+      const t3 = this.terrainHeight(-24.4, 8.1)
+      this._addBoulder(parts, cols, -25.6, t1 + 0.9, 7.0, 1.9, s++)
+      this._addBoulder(parts, cols, -22.8, t2 + 0.7, 9.2, 1.7, s++)
+      this._addBoulder(parts, cols, -24.4, t3 + 2.5, 8.1, 2.1, s++) // dalle au-dessus
+    }
+
+    // fusion : 1 mesh, 1 draw call, liseré cartoon
+    if (parts.length) {
+      const merged = mergeGeometries(parts)
+      if (merged) {
+        const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0 })
+        applyRimMaterial(mat, { str: 0.62 })
+        const mesh = new THREE.Mesh(merged, mat)
+        mesh.castShadow = mesh.receiveShadow = true
+        mesh.frustumCulled = false
+        this.group.add(mesh)
+      }
+    }
+    for (const c of cols) this.colliders.push(c)
+
+    // ---------- CRISTAUX de la grotte + lumière ----------
+    const floorY1 = (x, z) => this.terrainHeight(x, z)
+    const mkShards = (defs, mat) => {
+      const gs = []
+      for (const [sx, sz, rad, k] of defs) {
+        const g = new THREE.OctahedronGeometry(rad, 0)
+        g.scale(1, k, 1)
+        g.rotateZ(rand(-0.3, 0.3)); g.rotateX(rand(-0.25, 0.25))
+        g.translate(sx, floorY1(sx, sz) + rad * k * 0.42, sz)
+        gs.push(g)
+      }
+      const m = mergeGeometries(gs)
+      if (m) this.group.add(new THREE.Mesh(m, mat))
+    }
+    const cyanMat = new THREE.MeshStandardMaterial({
+      color: 0x35e0ff, emissive: 0x00c2e8, emissiveIntensity: 2.2, toneMapped: false,
+      roughness: 0.28, metalness: 0.1, transparent: true, opacity: 0.95
+    })
+    const magentaMat = new THREE.MeshStandardMaterial({
+      color: 0xff6ec7, emissive: 0xe0359a, emissiveIntensity: 1.9, toneMapped: false,
+      roughness: 0.3, metalness: 0.1, transparent: true, opacity: 0.95
+    })
+    mkShards([
+      [26.7, 13.9, 0.34, 2.3], [27.3, 12.3, 0.26, 1.9], [24.0, 14.9, 0.3, 2.1],
+      [24.9, 11.7, 0.22, 1.7], [26.3, 15.0, 0.2, 1.6]
+    ], cyanMat)
+    mkShards([
+      [23.4, 12.2, 0.24, 1.9], [26.0, 11.4, 0.19, 1.7], [24.4, 15.3, 0.17, 1.6]
+    ], magentaMat)
+    const caveLight = new THREE.PointLight(0x59e8ff, 16, 14, 1.7)
+    caveLight.position.set(25.2, 2.4, 13)
+    this.group.add(caveLight)
   }
 
   // ---------- Vitres + cadre ----------
@@ -359,6 +576,8 @@ export class World {
       if (Math.abs(x) < 13 && z > this.d / 2 - 9) continue // commissariat dégagé
       if (Math.abs(x + 22) < 9 && Math.abs(z + 12) < 7) continue // zone épave
       if (Math.abs(x - 15.5) < 3.4 && Math.abs(z + 7.5) < 3.4) continue // coffre dégagé
+      if (Math.abs(x - 25) < 7.6 && Math.abs(z - 13) < 7.6) continue // grotte à cristaux
+      if (Math.abs(x + 6) < 7 && Math.abs(z + 15) < 7) continue // arche de pierre
       if (minR > 0 && pts.some(p => (p[0] - x) ** 2 + (p[1] - z) ** 2 < minR * minR)) continue
       pts.push([x, z])
     }
@@ -400,12 +619,13 @@ export class World {
         for (const [x, z] of this._scatter(def.n, mx, mz, def.minR)) {
           const size = rand(def.size[0], def.size[1])
           const sink = def.sink * rand(0.7, 1.3)
-          const M = placeMatrix(bbox, { x, z, size, rotY: rand(0, Math.PI * 2), tiltZ: def.tiltZ ? rand(-def.tiltZ, def.tiltZ) : 0, sink })
+          const baseY = this.terrainHeight(x, z)
+          const M = placeMatrix(bbox, { x, z, size, baseY, rotY: rand(0, Math.PI * 2), tiltZ: def.tiltZ ? rand(-def.tiltZ, def.tiltZ) : 0, sink })
           for (const g0 of geos) parts.push(g0.clone().applyMatrix4(M))
           if (def.col) {
             const r = size * def.col
-            this.colliders.push({ x, y: Math.max(0.3, r * 0.85 - sink), z, r })
-            if (def.spire) this.colliders.push({ x, y: size * 0.52, z, r: r * 0.62 })
+            this.colliders.push({ x, y: baseY + Math.max(0.3, r * 0.85 - sink), z, r })
+            if (def.spire) this.colliders.push({ x, y: baseY + size * 0.52, z, r: r * 0.62 })
           }
         }
         if (--pending === 0) this._commitReef(parts, mat)
@@ -462,7 +682,7 @@ export class World {
         const bbox = new THREE.Box3().setFromObject(src)
         for (const [x, z] of this._scatter(def.n, 4, 3, def.minR)) {
           const size = rand(def.size[0], def.size[1])
-          const M = placeMatrix(bbox, { x, z, size, rotY: rand(0, Math.PI * 2), sink: 0.04 })
+          const M = placeMatrix(bbox, { x, z, size, baseY: this.terrainHeight(x, z), rotY: rand(0, Math.PI * 2), sink: 0.04 })
           for (const g0 of geos) {
             const g = g0.clone().applyMatrix4(M)
             // aSway : amplitude du modèle + hauteur normalisée du sommet
@@ -515,8 +735,9 @@ export class World {
         for (const [x, z] of this._scatter(def.n, 3.5, 3, 1.2)) {
           const inst = cloneSkinned(src)
           const size = rand(def.size[0], def.size[1])
+          const baseY = this.terrainHeight(x, z)
           const holder = this._placeModel(inst, {
-            pos: [x, 0.05, z], rotY: rand(0, Math.PI * 2), size,
+            pos: [x, baseY + 0.05, z], rotY: rand(0, Math.PI * 2), size,
             rim: { str: 0.55 }
           })
           const mixer = new THREE.AnimationMixer(inst)
@@ -528,7 +749,7 @@ export class World {
           this.critters.push({
             mixer, holder, clips: anims, react: def.react,
             state: 'idle', cooldown: rand(0, 2),
-            pos: new THREE.Vector3(x, 0.6, z)
+            pos: new THREE.Vector3(x, baseY + 0.6, z)
           })
         }
       })
@@ -567,7 +788,7 @@ export class World {
     for (let i = 0; i < N; i++) {
       const x = rand(-this.w / 2 + 1, this.w / 2 - 1)
       const z = rand(-this.d / 2 + 1, this.d / 2 - 1)
-      const y = rand(0, this.h)
+      const y = this.terrainHeight(x, z) + rand(0.3, this.h - 2)
       pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z
       this.bubbleData.push({ x, z, speed: rand(0.4, 1.2), wobble: rand(0, Math.PI * 2), size: rand(0.5, 1) })
     }
@@ -591,7 +812,7 @@ export class World {
     for (let i = 0; i < N; i++) {
       const x = rand(-this.w / 2, this.w / 2)
       const z = rand(-this.d / 2, this.d / 2)
-      const y = rand(0.5, this.h - 1)
+      const y = this.terrainHeight(x, z) + rand(0.5, this.h - 1)
       pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z
       this.planktonData.push({
         x, y, z,
@@ -842,9 +1063,10 @@ export class World {
     for (const [x, z, ry] of barrels) {
       loadProp('k_pirate_barrel').then(s => {
         if (!s) return
+        const by = this.terrainHeight(x, z)
         this._placeModel(s.clone(true), {
-          pos: [x, 0.15, z], rotY: ry, size: 1.05,
-          colliders: [[x, 0.55, z, 0.55]], rim: true
+          pos: [x, by + 0.15, z], rotY: ry, size: 1.05,
+          colliders: [[x, by + 0.55, z, 0.55]], rim: true
         })
       })
     }
@@ -852,9 +1074,10 @@ export class World {
     for (const [x, z, ry] of crates) {
       loadProp('k_pirate_crate').then(s => {
         if (!s) return
+        const by = this.terrainHeight(x, z)
         this._placeModel(s.clone(true), {
-          pos: [x, 0.15, z], rotY: ry, size: 1.0,
-          colliders: [[x, 0.5, z, 0.6]], rim: true
+          pos: [x, by + 0.15, z], rotY: ry, size: 1.0,
+          colliders: [[x, by + 0.5, z, 0.6]], rim: true
         })
       })
     }
@@ -877,7 +1100,10 @@ export class World {
   }
 
   // ============================================================
-  // Collision : sphère contre les murs / sol / props
+  // Collision : sphère contre les murs / sol (RELIEF) / props
+  // Le sol suit le champ de hauteur : dunes, buttes, vasques et
+  // fond de grotte. La normale de pente permet de se pousser sur
+  // les flancs des bosses comme sur une vraie parois.
   // ============================================================
   collideSphere(pos, r) {
     const b = this.bounds
@@ -888,7 +1114,18 @@ export class World {
     if (pos.x > b.xmax - r) { pos.x = b.xmax - r; nx = -1; hit = true }
     if (pos.z < b.zmin + r) { pos.z = b.zmin + r; nz = 1; hit = true }
     if (pos.z > b.zmax - r) { pos.z = b.zmax - r; nz = -1; hit = true }
-    if (pos.y < b.floorY + r) { pos.y = b.floorY + r; ny = 1; hit = true; floor = true }
+    // sol en relief : échantillon du champ de hauteur sous la sphère
+    const th = this.terrainHeight(pos.x, pos.z)
+    if (pos.y < th + r) {
+      pos.y = th + r
+      hit = true; floor = true
+      // normale de pente (gradient local du champ de hauteur)
+      const e = 0.4
+      const gx = (this.terrainHeight(pos.x + e, pos.z) - this.terrainHeight(pos.x - e, pos.z)) / (2 * e)
+      const gz = (this.terrainHeight(pos.x, pos.z + e) - this.terrainHeight(pos.x, pos.z - e)) / (2 * e)
+      const inv = 1 / Math.sqrt(gx * gx + gz * gz + 1)
+      nx = -gx * inv; ny = inv; nz = -gz * inv
+    }
     if (pos.y > b.topY - r) { pos.y = b.topY - r; ny = -1; hit = true }
     // props sphériques
     for (const c of this.colliders) {
@@ -907,8 +1144,9 @@ export class World {
     return { hit, floor, nx, ny, nz }
   }
 
-  // Raycast analytique : murs AABB + sol + props sphériques.
-  // Retourne { t, point } ou null.
+  // Raycast analytique : murs AABB + sol en RELIEF (marche le long du
+  // rayon contre le champ de hauteur, impact affiné par bissection)
+  // + props sphériques. Retourne { t, point } ou null.
   raycast(origin, dir, maxDist = 120) {
     let best = maxDist
     const b = this.bounds
@@ -932,10 +1170,28 @@ export class World {
       }
       if (ok && tExit < best) best = tExit
     }
-    // sol
-    if (dir.y < -1e-9) {
-      const t = (0.15 - origin.y) / dir.y
-      if (t > 0 && t < best) best = t
+    // sol en relief : marche adaptative + bissection (le rayon peut
+    // partir du haut et plonger dans une dune, une butte ou une grotte)
+    if (origin.y < 5.5 || dir.y < 0) {
+      const step = 0.9
+      let t = 0.05
+      while (t < best) {
+        const tn = Math.min(t + step, best)
+        const py = origin.y + dir.y * tn
+        if (py > 5.5 && dir.y >= 0) break // au-dessus de tout le relief, ça monte
+        const d = py - this.terrainHeight(origin.x + dir.x * tn, origin.z + dir.z * tn)
+        if (d <= 0) {
+          let lo = t, hi = tn
+          for (let i = 0; i < 12; i++) {
+            const mid = (lo + hi) / 2
+            const dm = (origin.y + dir.y * mid) - this.terrainHeight(origin.x + dir.x * mid, origin.z + dir.z * mid)
+            if (dm > 0) lo = mid; else hi = mid
+          }
+          best = (lo + hi) / 2
+          break
+        }
+        t = tn
+      }
     }
     // props
     for (const c of this.colliders) {
@@ -959,7 +1215,9 @@ export class World {
     for (let i = 0; i < this.bubbleData.length; i++) {
       const b = this.bubbleData[i]
       let y = p.getY(i) + b.speed * dt
-      if (y > this.h - 0.3) { y = 0.1; b.x = rand(-this.w / 2 + 1, this.w / 2 - 1); b.z = rand(-this.d / 2 + 1, this.d / 2 - 1) }
+      const th = this.terrainHeight(b.x, b.z)
+      if (y < th + 0.12) y = th + 0.12 // jamais sous le relief
+      if (y > this.h - 0.3) { y = th + 0.15; b.x = rand(-this.w / 2 + 1, this.w / 2 - 1); b.z = rand(-this.d / 2 + 1, this.d / 2 - 1) }
       p.setXYZ(i, b.x + Math.sin(time * 1.3 + b.wobble) * 0.25, y, b.z + Math.cos(time * 1.1 + b.wobble) * 0.25)
     }
     p.needsUpdate = true
@@ -969,8 +1227,9 @@ export class World {
       for (let i = 0; i < this.planktonData.length; i++) {
         const m = this.planktonData[i]
         let y = m.y + m.vy * dt * 6
-        if (y > this.h - 0.8) { y = 0.6; m.y = 0.6 }
-        if (y < 0.4) { y = this.h - 1; m.y = y }
+        const th = this.terrainHeight(m.x, m.z)
+        if (y > this.h - 0.8) { y = th + 0.4 }
+        if (y < th + 0.22) { y = th + 0.22; if (m.vy < 0) m.vy = -m.vy }
         m.y = y
         pp.setXYZ(i,
           m.x + Math.sin(time * m.speed + m.phase) * m.amp,

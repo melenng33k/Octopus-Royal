@@ -246,6 +246,9 @@ export class FishSchool {
     } else {
       f.target.set(rand(b.xmin + 2, b.xmax - 2), rand(1.2, b.topY - 1), rand(b.zmin + 2, b.zmax - 2))
     }
+    // jamais une cible sous le relief (dunes, buttes, vasques)
+    const th = this.world.terrainHeight(f.target.x, f.target.z)
+    if (f.target.y < th + (f.big ? 2.2 : 1.2)) f.target.y = th + (f.big ? 2.2 : 1.2)
   }
 
   // ================= animation des modèles =================
@@ -314,6 +317,9 @@ export class FishSchool {
       f.pos.x = clamp(f.pos.x, b.xmin + 1, b.xmax - 1)
       f.pos.z = clamp(f.pos.z, b.zmin + 1, b.zmax - 1)
       f.pos.y = clamp(f.pos.y, f.big ? 2.5 : 0.8, b.topY - (f.big ? 2.2 : 0.8))
+      // rester au-dessus du relief (dunes, buttes, vasques)
+      const th = this.world.terrainHeight(f.pos.x, f.pos.z)
+      if (f.pos.y < th + (f.big ? 1.7 : 0.85)) f.pos.y = th + (f.big ? 1.7 : 0.85)
       f.mesh.rotation.set(pitch, f.yaw, Math.sin(time * 6 + f.phase) * (f.big ? 0.08 : 0.18))
     }
   }
@@ -324,6 +330,9 @@ export class FishSchool {
     f.mesh.visible = true
     const b = this.world.bounds
     f.pos.set(rand(b.xmin + 3, b.xmax - 3), rand(f.big ? 6 : 1.5, f.big ? b.topY - 4 : b.topY - 2), rand(b.zmin + 3, b.zmax - 3))
+    // au-dessus du relief
+    const th = this.world.terrainHeight(f.pos.x, f.pos.z)
+    if (f.pos.y < th + (f.big ? 2.2 : 1.2)) f.pos.y = th + (f.big ? 2.2 : 1.2)
     this._pickTarget(f)
   }
 
