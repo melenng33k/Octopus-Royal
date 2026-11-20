@@ -22,15 +22,16 @@ export const CFG = {
     gravity: 4.5,        // gravité marquée : on sent le poids sous l'eau
     fallCapVr: 4.6,      // vitesse de chute max CASQUE (m/s)
     fallCapDesktop: 0.8, // vitesse de chute max BUREAU (m/s)
-    drag: 1.05,          // traînée de l'eau (quand on glisse sans contact)
-    gtGain: 1.0,         // force de la poussée Gorilla Tag (1 = fidèle au jeu)
+    drag: 0.85,          // traînée de l'eau (quand on glisse sans contact) : glisse + loin
+    gtGain: 1.5,         // force de la poussée Gorilla Tag : petit geste = grand déplacement
     contactRadius: 0.13, // rayon de détection main ↔ surface (généreux, anti-jitter)
     penFix: 1.0,         // correction anti-traversée : les mains bloquent le corps
     handRadius: 0.07,
     bodyRadius: 0.4,     // rayon du corps (x échelle de croissance)
+    playerScale: 1.4,    // taille du joueur en casque : rig agrandi, on est plus grand que le décor
     launchHaptic: 0.55,  // vibration quand on décolle d'une surface avec de l'élan
     maxSpeed: 6.5,       // vitesse max BUREAU (m/s) avant bonus de croissance
-    vrMaxSpeed: 12,      // vitesse max CASQUE (m/s) : élan Gorilla Tag réaliste
+    vrMaxSpeed: 18,      // vitesse max CASQUE (m/s) : élan Gorilla Tag amplifié
     hapticEnabled: true
   },
 

@@ -223,10 +223,15 @@ export class Player {
   get speedMult() {
     return Math.min(1 + this.fishCount * CFG.growth.speedPerFish, CFG.growth.speedMax)
   }
-  get bodyRadius() { return CFG.phys.bodyRadius * this.scaleCur }
+  // Taille du joueur en VR : le rig entier (casque + manettes) est agrandi,
+  // donc le poulpe est plus grand que tous les objets du bassin. Le rig agrandi
+  // amplifie aussi mécaniquement les vitesses de main mesurées (x playerScale).
+  // En mode bureau : 1 (comportement inchangé).
+  get playerScale() { return this.renderer.xr.isPresenting ? CFG.phys.playerScale : 1 }
+  get bodyRadius() { return CFG.phys.bodyRadius * this.scaleCur * this.playerScale }
   get bodyCenter() {
     // juste sous la tête
-    return TMP.v1.copy(this.headWorld).addScaledVector(TMP.v2.set(0, 1, 0), -0.18 * this.scaleCur)
+    return TMP.v1.copy(this.headWorld).addScaledVector(TMP.v2.set(0, 1, 0), -0.18 * this.scaleCur * this.playerScale)
   }
   get unlocked() {
     const a = CFG.growth.abilities
@@ -303,7 +308,7 @@ export class Player {
   _tryGrab(hand) {
     if (this.dead) return
     const tip = hand === 'left' ? this._handPos('left', TMP.v3) : this._handPos('right', TMP.v3)
-    const f = this.game.fish.findGrab(tip, CFG.fish.grabRadius)
+    const f = this.game.fish.findGrab(tip, CFG.fish.grabRadius * this.playerScale)
     if (f) {
       this.heldFish[hand] = f
       this.game.fish.grab(f, 'self')
@@ -568,6 +573,10 @@ export class Player {
   update(dt, time) {
     this.scaleCur = damp(this.scaleCur, this.targetScale, 6, dt)
     const inVR = this.renderer.xr.isPresenting
+    // taille du joueur : rig agrandi en casque (on est plus grand que le décor),
+    // taille normale en bureau. Appliqué ici pour suivre les entrées/sorties VR.
+    const wantRig = inVR ? CFG.phys.playerScale : 1
+    if (Math.abs(this.rig.scale.x - wantRig) > 1e-6) this.rig.scale.setScalar(wantRig)
 
     // timers
     this.fireCd = Math.max(0, this.fireCd - dt)
@@ -805,13 +814,13 @@ export class Player {
     // déclare hors contact à chaque frame → la gravité s'accumule sous le
     // corps pendant que la correction la remonte → la caméra tremble
     // rapidement de haut en bas dès qu'on pose la main au sol.
-    return this.game.world.collideSphere(test, CFG.phys.contactRadius + 0.002).hit
+    return this.game.world.collideSphere(test, (CFG.phys.contactRadius + 0.002) * this.playerScale).hit
   }
 
   // collision du corps (sphère sous la tête) : ressort + amortissement
   _collideBody() {
     const head = this.camera.getWorldPosition(new THREE.Vector3())
-    const center = head.clone().add(new THREE.Vector3(0, -0.18 * this.scaleCur, 0))
+    const center = head.clone().add(new THREE.Vector3(0, -0.18 * this.scaleCur * this.playerScale, 0))
     const r = this.bodyRadius
     const before = center.clone()
     const res = this.game.world.collideSphere(center, r)
@@ -830,10 +839,10 @@ export class Player {
     for (const hand of ['left', 'right']) {
       const pos = this._handPos(hand, new THREE.Vector3())
       const before = pos.clone()
-      this.game.world.collideSphere(pos, CFG.phys.contactRadius)
+      this.game.world.collideSphere(pos, CFG.phys.contactRadius * this.playerScale)
       const delta = pos.sub(before)
       if (delta.lengthSq() > 1e-8) {
-        if (delta.length() > 0.25) delta.setLength(0.25)
+        if (delta.length() > 0.25 * this.playerScale) delta.setLength(0.25 * this.playerScale)
         this.rig.position.add(delta)
       }
     }
@@ -845,8 +854,10 @@ export class Player {
     const head = this.headWorld.clone()
     const look = this.getLookDir(new THREE.Vector3())
     look.y = 0; look.normalize()
-    this.bodyGroup.position.copy(head).addScaledVector(look, -0.5 * this.scaleCur)
-    this.bodyGroup.position.y -= 0.12 * this.scaleCur
+    // bs = taille VISUELLE du poulpe : croissance (poissons mangés) x taille joueur VR
+    const bs = this.scaleCur * this.playerScale
+    this.bodyGroup.position.copy(head).addScaledVector(look, -0.5 * bs)
+    this.bodyGroup.position.y -= 0.12 * bs
     this.bodyGroup.rotation.y = Math.atan2(look.x, look.z) + Math.PI
     // inclinaison dynamique (lean) : le corps s"incline dans son mouvement,
     // la caméra ne bouge JAMAIS (confort VR)
@@ -857,8 +868,7 @@ export class Player {
     this._leanPitch = damp(this._leanPitch || 0, vFwd, 6, dt)
     this.bodyGroup.rotation.z = this._leanRoll
     this.bodyGroup.rotation.x = this._leanPitch
-    const s = this.scaleCur
-    this.bodyGroup.scale.setScalar(s)
+    this.bodyGroup.scale.setScalar(bs)
     if (isDead) this.bodyGroup.visible = false
     else this.bodyGroup.visible = true
 
@@ -874,6 +884,7 @@ export class Player {
 
   _updateTentacles(dt, time) {
     const T = CFG.tent
+    const bs = this.scaleCur * this.playerScale // taille visuelle du corps
     // racines : flancs du corps ; bouts : les mains (ou suspension libre)
     // convention : -Z local = avant, donc -Z local = face avant du corps
     const rootL = new THREE.Vector3(-0.17, -0.12, -0.04)
@@ -902,7 +913,7 @@ export class Player {
         // CASQUE : le bout suit la VRAIE main (manette) — c'est le bras du poulpe.
         // Il pend librement seulement si la main est collée au corps ET immobile.
         const dist = handPos.distanceTo(root)
-        const near = dist < T.restZone * this.scaleCur
+        const near = dist < T.restZone * bs
         const slow = this.handVelRel[hand].length() < T.restSpeed
         if (near && slow) tent.clearTip()
         else tent.setTip(handPos)
@@ -910,12 +921,12 @@ export class Player {
         // BUREAU : la tentacule PEND librement quand la main imaginaire est
         // proche du corps ; s'étire vers elle sinon (comportement validé)
         const dist = handPos.distanceTo(root)
-        const wD = clamp((dist - T.hangFree * this.scaleCur) / (T.hangReach * this.scaleCur), 0, 1)
+        const wD = clamp((dist - T.hangFree * bs) / (T.hangReach * bs), 0, 1)
         const wS = clamp(this.handVelRel[hand].length() / T.hangSpeed, 0, 1)
         const w = Math.max(wD, wS * 0.85, 0.85) // bureau : mains imaginaires toujours visées
         const len = (T.n - 1) * T.segLen * 0.8
         const hang = root.clone()
-        hang.y -= len * this.scaleCur
+        hang.y -= len * bs
         hang.x += Math.sin(time * 1.4 + (hand === 'left' ? 0 : 2.1)) * 0.1
         hang.z += Math.cos(time * 1.1 + (hand === 'left' ? 0 : 2.1)) * 0.1
         hang.lerp(handPos, w * w)
@@ -986,7 +997,7 @@ export class Player {
     const r = this._handPos('right', new THREE.Vector3())
     a[7] = l.x; a[8] = l.y; a[9] = l.z
     a[10] = r.x; a[11] = r.y; a[12] = r.z
-    a[13] = this.scaleCur
+    a[13] = this.scaleCur * this.playerScale // taille effective : les autres nous voient plus grand en VR
     a[14] = clamp(this.hp / this.maxHp, 0, 1)
     a[15] = CFG.weapons.findIndex(w => w.id === this.curWeapon)
     a[16] = this.camoActive ? 1 : 0

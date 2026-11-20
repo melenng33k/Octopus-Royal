@@ -316,7 +316,7 @@ export class WatchMenu {
       const c = p.xrHands[hand]
       if (!c) continue
       c.getWorldPosition(this._v2)
-      if (this._v2.distanceTo(this._v1) < CFG.watch.touchRadius) { touched = true; break }
+      if (this._v2.distanceTo(this._v1) < CFG.watch.touchRadius * p.playerScale) { touched = true; break }
     }
     if (touched && !this._touching && this._cd <= 0) {
       this._cd = CFG.watch.cooldown
