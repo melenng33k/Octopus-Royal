@@ -16,7 +16,7 @@ import { WatchMenu } from '../systems/WatchMenu.js'
 import { Hud } from '../systems/Hud.js'
 import { Network } from '../net/Network.js'
 import { sfx } from '../sfx.js'
-import { randomName, fmtMoney } from '../utils.js'
+import { randomName, fmtMoney, rand } from '../utils.js'
 
 export class Game {
   constructor(mode, name, roomName) {
@@ -44,12 +44,13 @@ export class Game {
     this.player = new Player(this, name)
     this.net = new Network(this)
     this.remotes = new Map()
-    this.npcs = []
+    this.npcs = []          // vois IA PARTAGÉS (l'hôte simule, les invités interpolent)
     this.inkClouds = []
     this.bounties = []
     this.uiPointing = false
     this.uiClickRequested = false
     this._bountyTimers = []
+    this._npcRespawnT = CFG.npc.firstSpawnDelay // rare : délai avant le 1er voyou
 
     this.boards = new Boards(this.scene, this.world, this)
     this.watch = new WatchMenu(this)
@@ -110,10 +111,22 @@ export class Game {
       this.fish.updateRemote(dt)
     }
 
-    // vois IA (avis de recherche personnels)
-    for (const npc of this.npcs) {
-      if (!npc) continue
-      npc.update(dt, time, this.player.bodyCenter.clone(), this.player.dead, this.inkClouds)
+    // vois IA : MONDE PARTAGÉ — l'hôte simule et diffuse (8 Hz),
+    // les invités interpolent. Le voyou traque le joueur le plus proche.
+    if (this.net.isHost) {
+      // migration d'hôte : les vois recus du réseau passent en simulation locale
+      for (const n of this.npcs) if (n && n.remote) n.remote = false
+      this._updateNpcSpawns(dt)
+      for (const npc of this.npcs) {
+        if (!npc || npc.dead) continue
+        const tgt = this._nearestPlayerFor(npc)
+        npc.update(dt, time, tgt.pos, tgt.dead, this.inkClouds)
+      }
+    } else {
+      for (const npc of this.npcs) {
+        if (!npc || npc.dead) continue
+        npc.update(dt, time, this.player.bodyCenter.clone(), this.player.dead, this.inkClouds)
+      }
     }
     for (let i = this.npcs.length - 1; i >= 0; i--) {
       if (this.npcs[i] && this.npcs[i].dead) this._npcDied(this.npcs[i])
@@ -204,10 +217,14 @@ export class Game {
     let dist = worldHit ? worldHit.t : 70
     let target = null
 
-    // joueurs distants
+    // joueurs distants — hitbox EN 2 SPHÈRES : tête + corps (le poulpe visible
+    // est un gros corps derrière la tête ; viser le corps doit TOUCHER,
+    // sinon le tir « passe à travers » et on croit que tirer ne fait rien)
     for (const r of this.remotes.values()) {
       if (!r.alive || !r._hasState) continue
-      const t = this._raySphere(origin, dir, r.position, 0.55 * r.scale)
+      const tHead = this._raySphere(origin, dir, r.position, 0.55 * r.scale)
+      const tBody = this._raySphere(origin, dir, r.group.position, 0.72 * r.scale)
+      const t = tHead !== null && tBody !== null ? Math.min(tHead, tBody) : (tHead !== null ? tHead : tBody)
       if (t !== null && t < dist) { dist = t; target = { kind: 'remote', obj: r } }
     }
     // vois IA
@@ -225,9 +242,10 @@ export class Game {
     if (target) {
       if (target.kind === 'remote') {
         this.net.sendEv({ t: 'hit', to: target.obj.id, dmg: weapon.dmg, w: weapon.id })
-      } else {
-        target.obj.damage(weapon.dmg)
+        // feedback TIREUR : sans ce son, toucher un joueur ne « dit » rien
         sfx.impact()
+      } else {
+        this.damageNpc(target.obj, weapon.dmg)
       }
     }
     // montrer le tir aux autres (visuel uniquement)
@@ -245,12 +263,13 @@ export class Game {
     return t
   }
 
-  // cible de coup de tentacule (bouts des bras)
+  // cible de coup de tentacule (bouts des bras) — même hitbox 2 sphères
+  // que les tirs : toucher le CORPS du poulpe distant compte aussi
   findPunchTarget(tip, range, attacker) {
     let best = null, bd = range
     for (const r of this.remotes.values()) {
       if (!r.alive || !r._hasState) continue
-      const d = tip.distanceTo(r.position)
+      const d = Math.min(tip.distanceTo(r.position), tip.distanceTo(r.group.position))
       if (d < bd) { bd = d; best = { kind: 'remote', obj: r } }
     }
     for (const npc of this.npcs) {
@@ -265,15 +284,165 @@ export class Game {
     this.fx.impact(tip.clone(), 0xffb0a0, 5)
     if (target.kind === 'remote') {
       this.net.sendEv({ t: 'hit', to: target.obj.id, dmg, w: 'fists' })
+      sfx.impact() // feedback du coup donné à un joueur
     } else {
-      target.obj.damage(dmg)
-      sfx.impact()
+      this.damageNpc(target.obj, dmg)
+    }
+  }
+
+  // ============================================================
+  // VOIS IA PARTAGÉS — tout le monde voit les MÊMES voyous.
+  // L'hôte fait tourner l'IA et diffuse l'état ; les dégâts sont
+  // routés vers l'hôte (tir d'un invité -> event npcHit), et la mort
+  // est annoncée à tous avec le crédit de la prime au vrai tueur.
+  // ============================================================
+  // coup reçu par un vois : routage hôte (source de vérité)
+  damageNpc(npc, dmg) {
+    sfx.impact() // feedback immédiat du tireur, où qu'il soit
+    if (this.net.isHost) {
+      npc.lastHitBy = 'host'
+      npc.damage(dmg)
+    } else {
+      this.net.sendEv({ t: 'npcHit', id: npc.id, dmg })
+    }
+  }
+
+  // apparition rare : au plus CFG.npc.maxActive voyou(s) partagé(s),
+  // espacés d'un délai aléatoire — le bassin est calme entre deux
+  _updateNpcSpawns(dt) {
+    const alive = this.npcs.filter(n => n && !n.dead).length
+    if (alive >= CFG.npc.maxActive) return
+    this._npcRespawnT -= dt
+    if (this._npcRespawnT <= 0) {
+      this._spawnSharedNpc()
+      this._npcRespawnT = rand(CFG.npc.respawnMin, CFG.npc.respawnMax)
+    }
+  }
+
+  _spawnSharedNpc() {
+    const eco = CFG.economy
+    // niveau du voyou calé sur le niveau MOYEN des joueurs présents
+    const levels = [this.player.level]
+    for (const r of this.remotes.values()) {
+      if (r.alive && r._hasState) levels.push(Math.floor(r.fish / CFG.growth.levelPerFish) + 1)
+    }
+    const avg = levels.reduce((a, b) => a + b, 0) / levels.length
+    const level = Math.max(1, Math.round(avg + (Math.random() < 0.5 ? 0 : 1)))
+    const reward = Math.round((eco.bountyBase + (level - 1) * eco.bountyPerLevel) / 5) * 5
+    const name = randomName() + '_V'
+    const npc = new NpcBounty(this.scene, this.world, { name, level, reward })
+    npc.lastHitBy = 'host'
+    this.npcs.push(npc)
+    this.sendNpcRoster()
+    this.refreshBounties()
+    this.hud.toast('Un voyou rôde dans le bassin : ' + name + '  (' + reward + ' ¢)')
+  }
+
+  // le voyou traque le joueur (local ou distant) le plus proche
+  _nearestPlayerFor(npc) {
+    let best = { pos: this.player.bodyCenter.clone(), dead: this.player.dead, id: 'self' }
+    let bd = best.dead ? Infinity : best.pos.distanceToSquared(npc.pos)
+    for (const r of this.remotes.values()) {
+      if (!r.alive || !r._hasState) continue
+      const d = r.group.position.distanceToSquared(npc.pos)
+      if (d < bd) { bd = d; best = { pos: r.group.position.clone(), dead: false, id: r.id } }
+    }
+    npc.curTarget = best.id
+    return best
+  }
+
+  // ----- réseau vois : état binaire [count, (x,y,z,yaw,scale,hp,attaque)*n] -----
+  encodeNpcs() {
+    const alive = this.npcs.filter(n => n && !n.dead)
+    const arr = new Float32Array(1 + alive.length * 7)
+    arr[0] = alive.length
+    alive.forEach((n, i) => {
+      const o = 1 + i * 7
+      arr[o] = n.pos.x
+      arr[o + 1] = n.pos.y
+      arr[o + 2] = n.pos.z
+      arr[o + 3] = n.yaw
+      arr[o + 4] = n.scale
+      arr[o + 5] = Math.max(0, n.hp / n.maxHp)
+      arr[o + 6] = Math.max(0, n.attackAnim)
+    })
+    return arr
+  }
+
+  decodeNpcs(f32) {
+    if (this.net.isHost) return
+    const count = Math.min(Math.floor(f32[0] || 0), Math.floor((f32.length - 1) / 7))
+    for (let i = 0; i < count; i++) {
+      const npc = this.npcs[i] // même ordre que le roster de l'hôte
+      if (!npc || npc.dead) continue
+      const o = 1 + i * 7
+      npc.netX = f32[o]
+      npc.netY = f32[o + 1]
+      npc.netZ = f32[o + 2]
+      npc.netYaw = f32[o + 3]
+      npc.netScale = f32[o + 4]
+      npc.netAttack = f32[o + 6]
+      const hp01 = f32[o + 5]
+      // flash quand les pv baissent (retour visuel du dégât reçu)
+      if (npc._hp01 !== undefined && hp01 < npc._hp01 - 0.001 && npc.octo) npc.octo.flash(0.15)
+      npc._hp01 = hp01
+      npc.hasNet = true
+    }
+  }
+
+  // ----- roster : liste nominative des vois vivants (id, nom, prime) -----
+  npcRoster() {
+    return {
+      t: 'npcRoster',
+      list: this.npcs.filter(n => n && !n.dead).map(n => ({
+        id: n.id, name: n.name, level: n.level, reward: n.reward, maxHp: n.maxHp
+      }))
+    }
+  }
+
+  sendNpcRoster() {
+    if (this.net.isHost) this.net.sendEv(this.npcRoster())
+  }
+
+  sendNpcRosterTo(peerId) {
+    if (this.net.isHost) this.net.sendEvTo(peerId, this.npcRoster())
+  }
+
+  // côté invité : crée/supprime les vois pour coller au roster de l'hôte
+  _applyNpcRoster(list) {
+    if (this.net.isHost) return
+    const seen = new Set()
+    let changed = false
+    for (const r of list) {
+      seen.add(r.id)
+      let npc = this.npcs.find(n => n && n.id === r.id)
+      if (!npc) {
+        npc = new NpcBounty(this.scene, this.world, {
+          name: r.name, level: r.level, reward: r.reward, id: r.id, maxHp: r.maxHp, remote: true
+        })
+        this.npcs.push(npc)
+        changed = true
+        this.hud.toast('Un voyou rôde dans le bassin : ' + r.name + '  (' + r.reward + ' ¢)')
+      }
+    }
+    for (const n of this.npcs) {
+      if (n && !seen.has(n.id)) { n.dispose(); changed = true }
+    }
+    if (changed) {
+      this.npcs = this.npcs.filter(n => n && seen.has(n.id))
+      this.refreshBounties()
     }
   }
 
   onNpcPunch(npc) {
-    this.player.damage(npc.dmg, 'npc:' + npc.id)
-    this.hud.flashHit()
+    // le voyou frappe le joueur qu'il traque (hôte) : si c'est un joueur
+    // distant, on lui transmet le coup, il s'inflige lui-même
+    if (npc.curTarget && npc.curTarget !== 'self') {
+      this.net.sendEvTo(npc.curTarget, { t: 'npcHitP', to: npc.curTarget, npcId: npc.id, dmg: npc.dmg })
+    } else {
+      this.player.damage(npc.dmg, 'npc:' + npc.id)
+      this.hud.flashHit()
+    }
   }
 
   spawnInk(pos, ownerId = this.net.selfId) {
@@ -332,6 +501,51 @@ export class Game {
         }
         break
       }
+      case 'npcHit': {
+        // un invité a touché le voyou partagé : l'hôte applique les dégâts
+        if (!this.net.isHost) break
+        const npc = this.npcs.find(n => n && n.id === ev.id && !n.dead)
+        if (npc) {
+          npc.lastHitBy = fromPeerId
+          npc.damage(ev.dmg)
+        }
+        break
+      }
+      case 'npcRoster': {
+        // liste officielle des vois vivants (diffusée par l'hôte)
+        this._applyNpcRoster(ev.list || [])
+        break
+      }
+      case 'npcDied': {
+        // le voyou partagé est tombé : effet + retrait chez tout le monde,
+        // la prime va au vrai tueur (event.killer)
+        const i = this.npcs.findIndex(n => n && n.id === ev.id)
+        if (i < 0) break
+        const npc = this.npcs[i]
+        this.fx.inkBurst(npc.pos.clone(), 16)
+        this.fx.popup('VOYOU ' + npc.name + ' neutralisé !', npc.pos.clone().add(new THREE.Vector3(0, 0.8, 0)), { color: '#ff9a8a', ttl: 2.4 })
+        sfx.die()
+        npc.dispose()
+        this.npcs.splice(i, 1)
+        const bt = this.bounties.find(b => b.npcRef === npc && b.status === 'alive')
+        if (ev.killer === this.net.selfId) {
+          // je suis le tueur : _killCredit encaisse la prime et marque 'done'
+          this._killCredit(null, npc)
+        } else {
+          if (bt) bt.status = 'done'
+          this._bountyTimers.push({ t: CFG.economy.bountyRefreshDelay, cb: () => this.refreshBounties() })
+        }
+        this.boards.markDirty()
+        break
+      }
+      case 'npcHitP': {
+        // le voyou partagé m'a frappé (je suis le joueur traqué)
+        if (ev.to === this.net.selfId) {
+          this.player.damage(ev.dmg, 'npc:' + (ev.npcId || 'npc'))
+          this.hud.flashHit()
+        }
+        break
+      }
     }
   }
 
@@ -355,47 +569,33 @@ export class Game {
   }
 
   // ============================================================
-  // AVIS DE RECHERCHE (3 affiches, cibles de mon niveau)
+  // AVIS DE RECHERCHE — affiches personnelles, cibles PARTAGÉES :
+  // d'abord les vrais joueurs proches de mon niveau, puis le(s)
+  // voyou(s) IA partagé(s) du bassin (les mêmes pour tout le monde).
   // ============================================================
   refreshBounties() {
     const eco = CFG.economy
-    const myLevel = this.player.level
     const list = []
 
-    // d'abord les vrais joueurs proches de mon niveau
+    // d'abord les vrais joueurs proches de mon niveau (2 max :
+    // on laisse une affiche au voyou partagé)
     const peers = [...this.remotes.values()]
       .filter(r => r.alive && r._hasState)
       .sort((a, b) => Math.abs(a.fish - this.player.fishCount) - Math.abs(b.fish - this.player.fishCount))
     for (const r of peers) {
-      if (list.length >= 3) break
+      if (list.length >= 2) break
       const reward = Math.round((eco.bountyBase + r.fish / CFG.growth.levelPerFish * eco.bountyPerLevel + r.fish * eco.bountyPerFish) / 5) * 5
       list.push({ type: 'peer', id: r.id, name: r.name, level: Math.floor(r.fish / CFG.growth.levelPerFish) + 1, reward, status: 'alive', npc: false })
     }
 
-    // puis des "poulpes voyous" IA pour compléter jusqu'à 3
-    while (list.length < 3) {
-      const slot = list.length
-      const existing = this.npcs[slot]
-      if (existing && !existing.dead && existing.level >= myLevel - 2 && existing.level <= myLevel + 2) {
-        list.push({
-          type: 'npc', id: existing.id, npcRef: existing, name: existing.name,
-          level: existing.level, reward: existing.reward, status: existing.dead ? 'done' : 'alive', npc: true
-        })
-      } else {
-        const level = Math.max(1, myLevel + (Math.random() < 0.5 ? 0 : 1) - (Math.random() < 0.3 ? 1 : 0))
-        const reward = Math.round((eco.bountyBase + (level - 1) * eco.bountyPerLevel) / 5) * 5
-        const name = randomName() + '_V'
-        const npc = new NpcBounty(this.scene, this.world, { name, level, reward })
-        this.npcs[slot] = npc
-        list.push({ type: 'npc', id: npc.id, npcRef: npc, name, level, reward, status: 'alive', npc: true })
-      }
-    }
-    // retire les vois devenus inutiles
-    for (let i = 0; i < this.npcs.length; i++) {
-      if (this.npcs[i] && !list.some(b => b.npcRef === this.npcs[i])) {
-        this.npcs[i].dispose()
-        this.npcs[i] = null
-      }
+    // puis le(s) voyou(s) IA partagé(s) — rares, donc parfois aucune affiche
+    for (const npc of this.npcs) {
+      if (list.length >= 3) break
+      if (!npc || npc.dead) continue
+      list.push({
+        type: 'npc', id: npc.id, npcRef: npc, name: npc.name,
+        level: npc.level, reward: npc.reward, status: 'alive', npc: true
+      })
     }
     this.bounties = list
     this.boards.markDirty()
@@ -437,14 +637,29 @@ export class Game {
     this.boards.markDirty()
   }
 
+  // mort d'un vois partagé (côté hôte — les invités passent par l'event npcDied)
   _npcDied(npc) {
+    const i = this.npcs.indexOf(npc)
+    if (i >= 0) this.npcs.splice(i, 1)
+    npc.dispose()
+    if (!this.net.isHost) return // sécurité : un invité ne devrait jamais ici
+
     this.fx.inkBurst(npc.pos.clone(), 16)
     this.fx.popup('VOYOU ' + npc.name + ' neutralisé !', npc.pos.clone().add(new THREE.Vector3(0, 0.8, 0)), { color: '#ff9a8a', ttl: 2.4 })
     sfx.die()
-    npc.dispose()
-    this.npcs = this.npcs.map(n => (n === npc ? null : n))
-    this._killCredit(null, npc)
-    this._bountyTimers.push({ t: CFG.economy.bountyRefreshDelay, cb: () => this.refreshBounties() })
+    // la prime revient au DERNIER tireur (hôte ou invité)
+    const killer = npc.lastHitBy || 'host'
+    if (killer === 'host') {
+      this._killCredit(null, npc) // programme déjà le rafraîchissement des affiches
+    } else {
+      const bt = this.bounties.find(b => b.npcRef === npc && b.status === 'alive')
+      if (bt) bt.status = 'done'
+      this._bountyTimers.push({ t: CFG.economy.bountyRefreshDelay, cb: () => this.refreshBounties() })
+    }
+    this.net.sendEv({ t: 'npcDied', id: npc.id, killer })
+    this.sendNpcRoster()
+    // rare : le prochain voyou n'arrivera qu'après un délai aléatoire
+    this._npcRespawnT = rand(CFG.npc.respawnMin, CFG.npc.respawnMax)
   }
 
   tryBuy(id) {

@@ -1,29 +1,46 @@
 // ============================================================
-// NpcBounty — "Poulpe voyou" : cible IA personnelle des avis de
-// recherche (visible seulement de son chasseur). Il traque,
-// fuit quand il est blessé, frappe de ses tentacules.
+// NpcBounty — "Poulpe voyou" : cible IA des avis de recherche.
+// MONDE PARTAGÉ : il n'existe qu'UNE copie de chaque voyou pour toute
+// la salle. L'hôte (pair au plus petit id) fait tourner l'IA et diffuse
+// son état ; les invités interpolent (mode remote). Il traque le joueur
+// le plus proche, fuit quand il est blessé, frappe de ses tentacules.
 // ============================================================
 import * as THREE from 'three'
 import { Tentacle } from './Tentacle.js'
 import { createOcto } from './OctoModel.js'
-import { makeTextSprite, rand, clamp } from '../utils.js'
+import { makeTextSprite, rand, clamp, damp } from '../utils.js'
 import { CFG } from '../config.js'
 
 let NPC_SEQ = 0
 
 export class NpcBounty {
-  constructor(scene, world, { name, level, reward }) {
+  // remote = true : l'invité n'exécute PAS l'IA, il interpole l'état réseau.
+  // id/maxHp : imposés par le roster de l'hôte pour que tous les pairs
+  // désignent le même voyou.
+  constructor(scene, world, { name, level, reward, id, maxHp, remote } = {}) {
     this.scene = scene
     this.world = world
-    this.id = 'npc_' + (++NPC_SEQ)
+    this.id = id || ('npc_' + (++NPC_SEQ))
     this.name = name
     this.level = level
     this.reward = reward
+    this.remote = !!remote
     this.scale = Math.min(1 + level * 0.06, 2.0)
-    this.maxHp = 60 + level * 25
+    this.maxHp = maxHp || (60 + level * 25)
     this.hp = this.maxHp
     this.dmg = 8 + level * 2
     this.dead = false
+    // --- synchronisation réseau (côté invité) ---
+    this.hasNet = false
+    this.netX = 0; this.netY = 0; this.netZ = 0
+    this.netYaw = 0
+    this.netScale = this.scale
+    this.netAttack = 0
+    this._hp01 = 1
+    this._hidden = false
+    // --- qui il traque / qui l'a touché (côté hôte) ---
+    this.curTarget = 'self'   // 'self' ou peerId du joueur traqué
+    this.lastHitBy = null     // 'host' ou peerId du dernier tireur
 
     this.pos = new THREE.Vector3()
     // loin du joueur à l'apparition (et pas dans le commissariat)
@@ -88,6 +105,47 @@ export class NpcBounty {
 
   update(dt, time, playerPos, playerDead, inkClouds) {
     if (this.dead) return
+    let dist = 1e9
+    if (this.remote) {
+      // INVITÉ : aucun IA — on interpole l'état diffusé par l'hôte
+      if (!this._applyNet(dt)) return // pas encore d'état reçu : reste caché
+      dist = playerPos ? playerPos.distanceTo(this.pos) : 1e9
+    } else {
+      // HÔTE : simulation complète (IA + physique)
+      dist = this._ai(dt, time, playerPos, playerDead, inkClouds)
+    }
+    this._visuals(dt, time, playerPos, dist)
+  }
+
+  // ----- invité : interpolation de l'état réseau -----
+  _applyNet(dt) {
+    if (!this.hasNet) {
+      this._setHidden(true)
+      return false
+    }
+    this._setHidden(false)
+    this.pos.x = damp(this.pos.x, this.netX, 10, dt)
+    this.pos.y = damp(this.pos.y, this.netY, 10, dt)
+    this.pos.z = damp(this.pos.z, this.netZ, 10, dt)
+    let dy = this.netYaw - this.yaw
+    while (dy > Math.PI) dy -= Math.PI * 2
+    while (dy < -Math.PI) dy += Math.PI * 2
+    this.yaw += dy * Math.min(1, 8 * dt)
+    this.scale = damp(this.scale, this.netScale, 6, dt)
+    if (this.netAttack > 0.02) this.attackAnim = this.netAttack
+    return true
+  }
+
+  _setHidden(v) {
+    if (this._hidden === v) return
+    this._hidden = v
+    this.group.visible = !v
+    this.nameSprite.visible = !v
+    for (const t of [...this.tentF, ...this.deco]) t.mesh.visible = !v
+  }
+
+  // ----- hôte : IA + physique (renvoie la distance au joueur traqué) -----
+  _ai(dt, time, playerPos, playerDead, inkClouds) {
     const toPlayer = playerPos.clone().sub(this.pos)
     const dist = toPlayer.length()
 
@@ -167,8 +225,12 @@ export class NpcBounty {
       this.pos.y = capY
       if (this.vel.y > 0) this.vel.y = 0
     }
-    const res = this.world.collideSphere(this.pos, 0.45 * this.scale)
+    this.world.collideSphere(this.pos, 0.45 * this.scale)
+    return dist
+  }
 
+  // ----- visuel commun (hôte ET invité) : modèle, étiquette, tentacules -----
+  _visuals(dt, time, playerPos, dist) {
     this.group.position.copy(this.pos)
     // convention -Z local = avant (le modèle GLB regarde -Z)
     this.group.rotation.y = this.yaw + Math.PI
@@ -190,8 +252,9 @@ export class NpcBounty {
     const rootR = new THREE.Vector3(0.17, -0.12, -0.04).applyMatrix4(this.group.matrixWorld)
     const lunge = this.attackAnim > 0
     if (lunge) this.attackAnim -= dt
-    const pL = lunge && dist < 3 ? playerPos.clone() : this.pos.clone().add(new THREE.Vector3(-0.1, -0.6 * this.scale, -0.7 * this.scale).applyQuaternion(this.group.quaternion).add(this.pos))
-    const pR = lunge && dist < 3 ? playerPos.clone() : this.pos.clone().add(new THREE.Vector3(0.1, -0.6 * this.scale, -0.7 * this.scale).applyQuaternion(this.group.quaternion).add(this.pos))
+    const aim = lunge && dist < 3 && playerPos ? playerPos : this.pos.clone().add(new THREE.Vector3(0, -0.6 * this.scale, -0.7 * this.scale).applyQuaternion(this.group.quaternion))
+    const pL = lunge && dist < 3 && playerPos ? playerPos.clone() : aim.clone().add(new THREE.Vector3(-0.1, 0, 0))
+    const pR = lunge && dist < 3 && playerPos ? playerPos.clone() : aim.clone().add(new THREE.Vector3(0.1, 0, 0))
     this.tentF[0].setRoot(rootL); this.tentF[0].setTip(pL)
     this.tentF[1].setRoot(rootR); this.tentF[1].setTip(pR)
     this.tentF[0].update(dt, time, this.world)

@@ -112,6 +112,17 @@ export const CFG = {
     camoOpacity: 0.16
   },
 
+  // ---------- Vois IA (avis de recherche) ----------
+  // MONDE PARTAGÉ : les vois sont les mêmes pour TOUS les joueurs (l'hôte
+  // simule et diffuse, les invités affichent). Bien plus rares qu'avant
+  // (avant : 3 vois personnels par joueur, en permanence).
+  npc: {
+    maxActive: 1,        // voyous simultanés partagés dans tout le bassin
+    firstSpawnDelay: 7,  // délai (s) avant le tout premier voyou
+    respawnMin: 14,      // délai min (s) avant le prochain voyou après neutralisation
+    respawnMax: 26       // délai max (s) : entre les deux, le bassin est calme
+  },
+
   // ---------- Poissons ----------
   fish: {
     count: 38,           // dont 4 "grands hôtes" (requin, raie, dauphins) non attrapables
@@ -145,6 +156,7 @@ export const CFG = {
     room: 'ocean-global',
     stateHz: 12,          // envoi de pose
     fishHz: 8,            // envoi des poissons (par l'hôte)
+    npcHz: 8,             // envoi des vois IA partagés (par l'hôte)
     // TURN optionnel pour les NAT stricts (laisser vide sinon).
     // Exemple : [{ urls: 'turn:ton-serveur.com:3478', username: 'x', credential: 'y' }]
     turn: []

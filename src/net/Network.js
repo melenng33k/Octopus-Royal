@@ -1,8 +1,9 @@
 // ============================================================
 // Network — multijoueur P2P sans serveur (Trystero / WebRTC).
 // - pose binaire à 12 Hz (tête, mains, arme, camouflage...)
-// - poissons diffusés par l'hôte (le pair au plus petit id)
-// - événements : coups, tirs, encre, morts, poissons attrapés
+// - poissons ET vois IA diffusés par l'hôte (le pair au plus petit id)
+// - événements : coups, tirs, encre, morts, poissons attrapés,
+//   dégâts aux vois, roster des vois, coups de vois reçus
 // - méta : pseudo, poissons, argent (pour les primes)
 // ============================================================
 import { joinRoom } from 'trystero'
@@ -16,6 +17,7 @@ export class Network {
     this.connected = false
     this._stateAcc = 0
     this._fishAcc = 0
+    this._npcAcc = 0
   }
 
   async connect(roomName) {
@@ -38,6 +40,7 @@ export class Network {
     // --- actions ---
     this.poseA = this.room.makeAction('pose')
     this.fishA = this.room.makeAction('fish')
+    this.npcA = this.room.makeAction('npc')
     this.evA = this.room.makeAction('ev')
     this.metaA = this.room.makeAction('meta')
 
@@ -58,6 +61,12 @@ export class Network {
       if (f32) this.game.fish.decodeSync(f32)
     })
 
+    // vois IA partagés : seul l'hôte diffuse (positions, vie, attaque)
+    this.npcA.onMessage((data) => {
+      const f32 = toF32(data)
+      if (f32) this.game.decodeNpcs(f32)
+    })
+
     this.evA.onMessage((data, ctx) => {
       if (data && typeof data === 'object') this.game.onEvent(data, ctx.peerId)
     })
@@ -72,8 +81,12 @@ export class Network {
     this.room.onPeerJoin(({ peerId }) => {
       this.game.onPeerJoin(peerId)
       this.sendMetaTo(peerId)
-      // l'hôte envoie immédiatement l'état des poissons au nouveau venu
-      if (this.isHost) this.game.fishDirty = true
+      // l'hôte envoie immédiatement l'état des poissons et le roster des
+      // vois IA au nouveau venu
+      if (this.isHost) {
+        this.game.fishDirty = true
+        this.game.sendNpcRosterTo(peerId)
+      }
     }, { replay: true })
 
     this.room.onPeerLeave(({ peerId }) => {
@@ -119,9 +132,22 @@ export class Network {
     }
   }
 
+  sendNpc(arr) {
+    if (this.connected) {
+      try { this.npcA.send(arr) } catch { /* */ }
+    }
+  }
+
   sendEv(obj) {
     if (this.connected) {
       try { this.evA.send(obj) } catch { /* */ }
+    }
+  }
+
+  // événement destiné à UN seul pair (ex. : coup de voyou reçu)
+  sendEvTo(peerId, obj) {
+    if (this.connected) {
+      try { this.evA.send(obj, { target: peerId }) } catch { /* */ }
     }
   }
 
@@ -148,12 +174,17 @@ export class Network {
       this._stateAcc = 0
       this.sendState(player.encodeState())
     }
-    // poissons : uniquement l'hôte diffuse
+    // poissons + vois IA : uniquement l'hôte diffuse
     if (this.isHost) {
       this._fishAcc += dt
       if (this._fishAcc >= 1 / CFG.net.fishHz) {
         this._fishAcc = 0
         this.sendFish(this.game.fish.encodeSync())
+      }
+      this._npcAcc += dt
+      if (this._npcAcc >= 1 / CFG.net.npcHz) {
+        this._npcAcc = 0
+        this.sendNpc(this.game.encodeNpcs())
       }
     }
   }
