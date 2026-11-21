@@ -31,11 +31,11 @@ export class NpcBounty {
     const b0 = world.bounds
     let tries = 0
     do {
-      this.pos.set(rand(b0.xmin + 4, b0.xmax - 4), rand(2, b0.topY - 3), rand(b0.zmin + 4, b0.zmax - 6))
+      this.pos.set(rand(b0.xmin + 4, b0.xmax - 4), 0, rand(b0.zmin + 4, b0.zmax - 6))
       tries++
     } while (this.pos.distanceTo(spawn) < 10 && tries < 30)
-    // jamais d'apparition sous le relief (dunes, buttes)
-    this.pos.y = Math.max(this.pos.y, this.world.terrainHeight(this.pos.x, this.pos.z) + 1.6)
+    // apparition près du fond : entre 1 et 3 m au-dessus du relief (jamais en haute eau)
+    this.pos.y = this.world.terrainHeight(this.pos.x, this.pos.z) + rand(1.2, 3)
     this.vel = new THREE.Vector3()
     this.yaw = rand(0, Math.PI * 2)
     this.target = new THREE.Vector3()
@@ -115,9 +115,9 @@ export class NpcBounty {
       this.stateTimer -= dt
       if (this.stateTimer <= 0) {
         const b = this.world.bounds
-        this.target.set(rand(b.xmin + 2, b.xmax - 2), rand(1.5, b.topY - 1.5), rand(b.zmin + 2, b.zmax - 2))
-        // cible au-dessus du relief
-        this.target.y = Math.max(this.target.y, this.world.terrainHeight(this.target.x, this.target.z) + 1.4)
+        this.target.set(rand(b.xmin + 2, b.xmax - 2), 0, rand(b.zmin + 2, b.zmax - 2))
+        // cible près du fond : entre 1 et 3 m au-dessus du relief
+        this.target.y = this.world.terrainHeight(this.target.x, this.target.z) + rand(1, 3)
         this.stateTimer = rand(2.5, 5)
       }
       desired.copy(this.target).sub(this.pos)
@@ -139,6 +139,13 @@ export class NpcBounty {
       speed *= 1.5
     }
 
+    // ---- plafond d'altitude : le voyou reste ENTRE 0 ET 3 M DU SOL ----
+    // (il traque au ras des dunes ; s'il est trop haut il redescend au lieu de monter)
+    const groundY = this.world.terrainHeight(this.pos.x, this.pos.z)
+    const alt = this.pos.y - groundY
+    if (alt > 1.8 && desired.y > 0) desired.y *= 0.15 // freine la montée près du plafond
+    if (alt > 3) desired.y = Math.min(desired.y, 0) - 1.4 // redescend activement
+
     if (desired.lengthSq() > 1e-6) {
       desired.normalize()
       const targetYaw = Math.atan2(desired.x, desired.z)
@@ -153,6 +160,13 @@ export class NpcBounty {
     this.pos.addScaledVector(this.vel, dt)
     // légère flottaison + bornes + collision
     this.pos.y += Math.sin(time * 1.8 + this.id.length) * 0.003
+    // bornes dures : JAMAIS plus de 3 m au-dessus du relief (le fond, lui,
+    // est géré par la collision sphère ↔ terrain juste en dessous)
+    const capY = this.world.terrainHeight(this.pos.x, this.pos.z) + 3
+    if (this.pos.y > capY) {
+      this.pos.y = capY
+      if (this.vel.y > 0) this.vel.y = 0
+    }
     const res = this.world.collideSphere(this.pos, 0.45 * this.scale)
 
     this.group.position.copy(this.pos)
